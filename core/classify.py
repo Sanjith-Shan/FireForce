@@ -116,7 +116,7 @@ def load_calibration() -> tuple:
     X, y = [], []
 
     for label_idx, gesture in enumerate(GESTURE_LABELS):
-        path = f"calibration_{gesture.lower()}.csv"
+        path = f"data/calibration_{gesture.lower()}.csv"
         try:
             df = pd.read_csv(path)
         except FileNotFoundError:
