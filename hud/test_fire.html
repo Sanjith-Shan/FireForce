@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SolSpecs — Fire Simulation Test</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #070710;
+      color: #c8c8c8;
+      font-family: 'Courier New', Courier, monospace;
+      display: flex;
+      flex-direction: row;
+      gap: 20px;
+      padding: 20px;
+      min-height: 100vh;
+    }
+
+    /* ── Canvas ── */
+    #canvasWrap {
+      position: relative;
+      flex-shrink: 0;
+    }
+    #fireCanvas {
+      display: block;
+      border: 1px solid #1e2a1e;
+      cursor: crosshair;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    /* Overlay canvas (firefighter dot, wind arrow) sits on top */
+    #overlayCanvas {
+      position: absolute;
+      top: 0; left: 0;
+      pointer-events: none;
+      image-rendering: pixelated;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      width: 220px;
+      flex-shrink: 0;
+    }
+
+    .panel {
+      background: #0a0a16;
+      border: 1px solid #1a1a2e;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .panel-title {
+      font-size: 10px;
+      letter-spacing: 3px;
+      color: #ff6600;
+      text-transform: uppercase;
+      border-bottom: 1px solid #1a1a0a;
+      padding-bottom: 6px;
+    }
+
+    /* sliders */
+    .ctrl { display: flex; flex-direction: column; gap: 4px; }
+    .ctrl label { font-size: 10px; color: #666; letter-spacing: 1px; }
+    .ctrl-val { color: #ffaa44; }
+    input[type=range] {
+      width: 100%;
+      accent-color: #ff6600;
+      cursor: pointer;
+    }
+
+    /* buttons */
+    .btn-row { display: flex; gap: 6px; }
+    button {
+      flex: 1;
+      padding: 6px 4px;
+      background: #0d100d;
+      color: #ff6600;
+      border: 1px solid #ff6600;
+      font-family: inherit;
+      font-size: 10px;
+      letter-spacing: 1px;
+      cursor: pointer;
+      transition: background 0.1s, color 0.1s;
+    }
+    button:hover { background: #ff6600; color: #000; }
+    button.btn-blue { color: #44aaff; border-color: #44aaff; }
+    button.btn-blue:hover { background: #44aaff; color: #000; }
+    button.btn-muted { color: #444; border-color: #333; }
+    button.btn-muted:hover { background: #333; color: #aaa; }
+
+    /* stats */
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      line-height: 1.8;
+    }
+    .stat-key { color: #555; }
+    .stat-val { color: #ffaa44; }
+    .stat-val.ok { color: #44ff88; }
+    .stat-val.warn { color: #ffcc00; }
+    .stat-val.danger { color: #ff3333; animation: blink 0.7s step-end infinite; }
+    @keyframes blink { 50% { opacity: 0.3; } }
+
+    /* legend */
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 10px;
+      color: #777;
+      line-height: 1.8;
+    }
+    .swatch { width: 18px; height: 10px; flex-shrink: 0; border: 1px solid #222; }
+    .swatch-dot {
+      width: 12px; height: 12px; flex-shrink: 0;
+      border-radius: 50%; border: 2px solid #fff;
+    }
+
+    /* predict overlay label */
+    #predictLabel {
+      font-size: 10px;
+      color: #44aaff;
+      text-align: center;
+      min-height: 14px;
+      letter-spacing: 1px;
+    }
+
+    .hint { font-size: 10px; color: #333; line-height: 1.7; }
+  </style>
+</head>
+<body>
+
+<!-- ── Canvas ───────────────────────────────────────────────────── -->
+<div id="canvasWrap">
+  <canvas id="fireCanvas"  width="512" height="512"></canvas>
+  <canvas id="overlayCanvas" width="512" height="512"></canvas>
+</div>
+
+<!-- ── Sidebar ──────────────────────────────────────────────────── -->
+<div class="sidebar">
+
+  <!-- Title -->
+  <div class="panel">
+    <div class="panel-title">⬥ FIRE SIMULATION</div>
+    <div style="font-size:10px;color:#444">
+      Phase 2 — Rothermel CA<br>
+      64×64 grid · 1 tick = 1 min
+    </div>
+  </div>
+
+  <!-- Wind controls -->
+  <div class="panel">
+    <div class="panel-title">WIND</div>
+    <div class="ctrl">
+      <label>DIRECTION <span class="ctrl-val" id="windDirLabel">45° NE</span></label>
+      <input type="range" id="windDir" min="0" max="359" value="45" step="1">
+    </div>
+    <div class="ctrl">
+      <label>SPEED <span class="ctrl-val" id="windSpeedLabel">15 mph</span></label>
+      <input type="range" id="windSpeed" min="0" max="30" value="15" step="1">
+    </div>
+  </div>
+
+  <!-- Playback -->
+  <div class="panel">
+    <div class="panel-title">PLAYBACK</div>
+    <div class="btn-row">
+      <button id="playPause">▶ PLAY</button>
+      <button id="resetBtn" class="btn-muted">↺ RESET</button>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="panel">
+    <div class="panel-title">STATS</div>
+    <div class="stat-row"><span class="stat-key">TICK</span>        <span class="stat-val" id="statTick">0</span></div>
+    <div class="stat-row"><span class="stat-key">SIM TIME</span>    <span class="stat-val" id="statTime">0 min</span></div>
+    <div class="stat-row"><span class="stat-key">BURNING</span>     <span class="stat-val" id="statBurning">3</span></div>
+    <div class="stat-row"><span class="stat-key">BURNED</span>      <span class="stat-val" id="statBurned">0</span></div>
+    <div class="stat-row"><span class="stat-key">THREAT</span>      <span class="stat-val ok" id="statThreat">—</span></div>
+    <div class="stat-row"><span class="stat-key">SCENARIO</span>    <span class="stat-val" id="statScenario">LIVE</span></div>
+  </div>
+
+  <!-- Prediction -->
+  <div class="panel">
+    <div class="panel-title">PREDICT</div>
+    <div id="predictLabel"></div>
+    <div class="btn-row">
+      <button class="btn-blue" id="predict10">+10 MIN</button>
+      <button class="btn-blue" id="predict30">+30 MIN</button>
+    </div>
+    <div style="font-size:9px;color:#2a2a44;margin-top:4px;text-align:center">
+      hold to preview → release snaps back
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div class="panel">
+    <div class="panel-title">LEGEND</div>
+    <div class="legend-item"><div class="swatch" style="background:#1a4488"></div>Water (firebreak)</div>
+    <div class="legend-item"><div class="swatch" style="background:#c8b456"></div>Grass (fast burn)</div>
+    <div class="legend-item"><div class="swatch" style="background:#4a6e2a"></div>Brush (medium)</div>
+    <div class="legend-item"><div class="swatch" style="background:#1d4d1a"></div>Forest (slow burn)</div>
+    <div class="legend-item"><div class="swatch" style="background:#888888"></div>Rock / Urban</div>
+    <div class="legend-item"><div class="swatch" style="background:#ff5500"></div>Burning</div>
+    <div class="legend-item"><div class="swatch" style="background:#2a0a02"></div>Burned / Char</div>
+    <div class="legend-item">
+      <div class="swatch-dot" style="background:#0088ff"></div>Firefighter
+    </div>
+  </div>
+
+  <!-- Hints -->
+  <div class="hint">
+    Click canvas to ignite a cell.<br>
+    Fire spreads with wind, stops<br>
+    at water, climbs hills faster.
+  </div>
+
+</div><!-- /sidebar -->
+
+<script src="fire_simulation.js"></script>
+<script>
+'use strict';
+
+const GRID  = 64;
+const PX    = 8;   // pixels per cell (512 / 64)
+
+// ── Canvas setup ────────────────────────────────────────────────────
+const canvas  = document.getElementById('fireCanvas');
+const ctx     = canvas.getContext('2d');
+const overlay = document.getElementById('overlayCanvas');
+const octx    = overlay.getContext('2d');
+
+// ── Grid + initial fire ─────────────────────────────────────────────
+const grid = new FireGrid(GRID);
+grid.generateTerrain(42);
+
+// Fire ignition: bottom-left corner cluster (demo scenario)
+grid.setFire(1, 62);
+grid.setFire(2, 61);
+grid.setFire(3, 62);
+
+// Firefighter dot location = centre of generated clearing
+const FIGHTER_X = grid.clearingX;   // 28
+const FIGHTER_Y = grid.clearingY;   // 32
+
+// ── State ────────────────────────────────────────────────────────────
+let playing    = false;
+let tickCount  = 0;
+let tickerId   = null;
+let predicting = false;   // true while a predict button is held
+let predCells  = null;    // cached prediction result
+
+// ── Controls ─────────────────────────────────────────────────────────
+const COMPASS = ['N','NNE','NE','ENE','E','ESE','SE','SSE',
+                 'S','SSW','SW','WSW','W','WNW','NW','NNW'];
+
+function compassLabel(deg) {
+    return COMPASS[Math.round(deg / 22.5) % 16];
+}
+
+const windDirSlider   = document.getElementById('windDir');
+const windSpeedSlider = document.getElementById('windSpeed');
+const windDirLabel    = document.getElementById('windDirLabel');
+const windSpeedLabel  = document.getElementById('windSpeedLabel');
+const playPauseBtn    = document.getElementById('playPause');
+const resetBtn        = document.getElementById('resetBtn');
+const predictLabelEl  = document.getElementById('predictLabel');
+
+function windDir()   { return parseInt(windDirSlider.value,   10); }
+function windSpeed() { return parseInt(windSpeedSlider.value, 10); }
+
+windDirSlider.addEventListener('input', () => {
+    const d = windDir();
+    windDirLabel.textContent = `${d}° ${compassLabel(d)}`;
+    if (!playing) drawOverlay(predicting ? predCells : grid.getState());
+});
+
+windSpeedSlider.addEventListener('input', () => {
+    windSpeedLabel.textContent = `${windSpeed()} mph`;
+});
+
+// Play / Pause
+playPauseBtn.addEventListener('click', () => {
+    playing = !playing;
+    if (playing) {
+        playPauseBtn.textContent = '⏸ PAUSE';
+        tickerId = setInterval(step, 500); // 2 ticks/sec
+    } else {
+        playPauseBtn.textContent = '▶ PLAY';
+        clearInterval(tickerId);
+    }
+});
+
+// Reset
+resetBtn.addEventListener('click', () => {
+    clearInterval(tickerId);
+    playing   = false;
+    tickCount = 0;
+    predicting = false;
+    predCells  = null;
+    playPauseBtn.textContent = '▶ PLAY';
+    predictLabelEl.textContent = '';
+    document.getElementById('statScenario').textContent = 'LIVE';
+
+    grid.reset();
+    grid.setFire(1, 62);
+    grid.setFire(2, 61);
+    grid.setFire(3, 62);
+
+    updateStats(grid.getState());
+    renderTerrain(grid.getState());
+    drawOverlay(grid.getState());
+});
+
+// Prediction buttons (hold = preview, release/leave = snap back)
+function bindPredictBtn(id, minutes) {
+    const btn = document.getElementById(id);
+
+    function showPrediction() {
+        predicting = true;
+        predictLabelEl.textContent = `PREDICTION: +${minutes} MIN`;
+        document.getElementById('statScenario').textContent = `+${minutes}min`;
+        predCells = grid.predictFuture(minutes, windDir(), windSpeed());
+        renderTerrain(predCells);
+        drawOverlay(predCells);
+    }
+
+    function snapBack() {
+        if (!predicting) return;
+        predicting = false;
+        predCells  = null;
+        predictLabelEl.textContent = '';
+        document.getElementById('statScenario').textContent = 'LIVE';
+        renderTerrain(grid.getState());
+        drawOverlay(grid.getState());
+    }
+
+    btn.addEventListener('mousedown',  showPrediction);
+    btn.addEventListener('touchstart', showPrediction);
+    btn.addEventListener('mouseup',    snapBack);
+    btn.addEventListener('mouseleave', snapBack);
+    btn.addEventListener('touchend',   snapBack);
+}
+bindPredictBtn('predict10', 10);
+bindPredictBtn('predict30', 30);
+
+// Click canvas to manually ignite a cell
+canvas.addEventListener('click', (e) => {
+    if (predicting) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = GRID * PX / rect.width;
+    const scaleY = GRID * PX / rect.height;
+    const cx = Math.floor((e.clientX - rect.left) * scaleX / PX);
+    const cy = Math.floor((e.clientY - rect.top)  * scaleY / PX);
+    grid.setFire(cx, cy);
+    renderTerrain(grid.getState());
+    drawOverlay(grid.getState());
+});
+
+// ── Simulation step ──────────────────────────────────────────────────
+function step() {
+    grid.tick(windDir(), windSpeed());
+    tickCount++;
+    const cells = grid.getState();
+    updateStats(cells);
+    if (!predicting) {
+        renderTerrain(cells);
+        drawOverlay(cells);
+    }
+}
+
+function updateStats(cells) {
+    let burning = 0, burned = 0, minDist = Infinity;
+    for (let y = 0; y < GRID; y++) {
+        for (let x = 0; x < GRID; x++) {
+            const s = cells[y][x].state;
+            if (s === 1) {
+                burning++;
+                const d = Math.hypot(x - FIGHTER_X, y - FIGHTER_Y);
+                if (d < minDist) minDist = d;
+            } else if (s === 2) {
+                burned++;
+            }
+        }
+    }
+    document.getElementById('statTick').textContent    = tickCount;
+    document.getElementById('statTime').textContent    = `${tickCount} min`;
+    document.getElementById('statBurning').textContent = burning;
+    document.getElementById('statBurned').textContent  = burned;
+
+    const threatEl = document.getElementById('statThreat');
+    if (!isFinite(minDist)) {
+        threatEl.textContent  = '—';
+        threatEl.className    = 'stat-val ok';
+    } else if (minDist <= 2) {
+        threatEl.textContent  = 'IMMINENT!';
+        threatEl.className    = 'stat-val danger';
+    } else {
+        threatEl.textContent  = `${Math.round(minDist)} cells`;
+        threatEl.className    = minDist < 8 ? 'stat-val warn' : 'stat-val ok';
+    }
+}
+
+// ── Rendering ────────────────────────────────────────────────────────
+
+// Base RGB per fuel type for unburned cells
+const FUEL_RGB = [
+    [26,  68,  136],  // 0 water     — blue
+    [200, 180,  86],  // 1 grass     — tan
+    [74,  110,  42],  // 2 brush     — dark olive
+    [29,   77,  26],  // 3 forest    — deep green
+    [119, 119, 119],  // 4 urban     — grey
+    [153, 153, 153],  // 5 rock      — light grey
+];
+const BURNING_RGB = [255, 80,   0];
+const BURNED_RGB  = [42,  14,   6];
+
+function renderTerrain(cells) {
+    const imageData = ctx.createImageData(512, 512);
+    const data = imageData.data;
+
+    for (let cy = 0; cy < GRID; cy++) {
+        for (let cx = 0; cx < GRID; cx++) {
+            const cell = cells[cy][cx];
+            let r, g, b;
+
+            if (cell.state === 1) {
+                // Burning — orange, slight brightness variation by fuel type
+                r = BURNING_RGB[0];
+                g = BURNING_RGB[1] + (cell.fuel_type === FireGrid.FUEL_GRASS ? 40 : 0);
+                b = BURNING_RGB[2];
+            } else if (cell.state === 2) {
+                // Burned — dark char
+                r = BURNED_RGB[0];
+                g = BURNED_RGB[1];
+                b = BURNED_RGB[2];
+            } else {
+                // Unburned: base colour shaded by elevation
+                const base = FUEL_RGB[cell.fuel_type] ?? FUEL_RGB[5];
+                // ef: 0.55 (low valley) → 1.10 (high ridge)
+                const ef = Math.max(0.55, Math.min(1.10,
+                    0.60 + 0.50 * (cell.elevation / 85)
+                ));
+                r = Math.min(255, Math.round(base[0] * ef));
+                g = Math.min(255, Math.round(base[1] * ef));
+                b = Math.min(255, Math.round(base[2] * ef));
+            }
+
+            // Fill PX×PX pixel block in ImageData
+            for (let py = 0; py < PX; py++) {
+                const rowStart = ((cy * PX + py) * 512 + cx * PX) * 4;
+                for (let px = 0; px < PX; px++) {
+                    const i = rowStart + px * 4;
+                    data[i]     = r;
+                    data[i + 1] = g;
+                    data[i + 2] = b;
+                    data[i + 3] = 255;
+                }
+            }
+        }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+}
+
+function drawOverlay(cells) {
+    octx.clearRect(0, 0, 512, 512);
+
+    // Firefighter position (blue dot)
+    const fx = FIGHTER_X * PX + PX / 2;
+    const fy = FIGHTER_Y * PX + PX / 2;
+    octx.beginPath();
+    octx.arc(fx, fy, 6, 0, Math.PI * 2);
+    octx.fillStyle   = '#0088ff';
+    octx.fill();
+    octx.strokeStyle = '#ffffff';
+    octx.lineWidth   = 2;
+    octx.stroke();
+
+    // Wind direction arrow (top-right corner, 16px from edge)
+    drawWindArrow();
+}
+
+function drawWindArrow() {
+    const dir = windDir();
+    const rad = dir * Math.PI / 180;
+    // Convert compass bearing to screen vector (N→up, E→right)
+    const vx = Math.sin(rad);
+    const vy = -Math.cos(rad);
+
+    const ox = 488, oy = 28;  // origin of arrow (tip of shaft)
+    const shaftLen = 20;
+    const headLen  = 8;
+
+    const tx = ox + vx * shaftLen;
+    const ty = oy + vy * shaftLen;
+    const ang = Math.atan2(vy, vx);
+
+    octx.save();
+    octx.strokeStyle = '#ffcc00';
+    octx.fillStyle   = '#ffcc00';
+    octx.lineWidth   = 2;
+
+    // Shaft
+    octx.beginPath();
+    octx.moveTo(ox, oy);
+    octx.lineTo(tx, ty);
+    octx.stroke();
+
+    // Arrowhead
+    octx.beginPath();
+    octx.moveTo(tx, ty);
+    octx.lineTo(tx - headLen * Math.cos(ang - 0.4), ty - headLen * Math.sin(ang - 0.4));
+    octx.lineTo(tx - headLen * Math.cos(ang + 0.4), ty - headLen * Math.sin(ang + 0.4));
+    octx.closePath();
+    octx.fill();
+
+    // Label
+    octx.font      = 'bold 9px Courier New';
+    octx.textAlign = 'right';
+    octx.fillText('WIND', ox - 4, oy + 3);
+    octx.textAlign = 'left';
+
+    octx.restore();
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────
+updateStats(grid.getState());
+renderTerrain(grid.getState());
+drawOverlay(grid.getState());
+</script>
+</body>
+</html>

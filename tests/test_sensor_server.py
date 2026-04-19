@@ -237,13 +237,14 @@ class TestAnalyzeFuelRoute:
         assert r.status_code == 200
         assert json.loads(r.data) == []
 
-    def test_no_api_key_returns_empty_list(self, client):
+    def test_no_api_key_returns_no_key_error(self, client):
         original = config.GEMINI_API_KEY
         config.GEMINI_API_KEY = ""
         try:
             r = client.post("/analyze-fuel", data=b"\xff\xd8fake_jpeg_bytes\xff\xd9")
             assert r.status_code == 200
-            assert json.loads(r.data) == []
+            data = json.loads(r.data)
+            assert data.get("error") == "no_key"
         finally:
             config.GEMINI_API_KEY = original
 
@@ -251,11 +252,11 @@ class TestAnalyzeFuelRoute:
         r = client.options("/analyze-fuel")
         assert "POST" in r.headers.get("Access-Control-Allow-Methods", "")
 
-    def test_returns_json_list_type(self, client):
-        # With no key, result is empty list — but must be a list, not an error
+    def test_returns_json_object_or_list(self, client):
+        # With no key returns {"error":"no_key"}; with key returns a list
         r = client.post("/analyze-fuel", data=b"\xff\xd8test\xff\xd9")
         data = json.loads(r.data)
-        assert isinstance(data, list)
+        assert isinstance(data, (list, dict))
 
 
 # ── StateMachine.get_current_state() ─────────────────────────────────────────
@@ -341,3 +342,122 @@ class TestGetCurrentState:
             sm.feed_mcu(_HOT_MCU)
         state = sm.get_current_state()
         assert state["heat_tier"] in ("yellow", "orange", "red")
+
+
+# ── /sensor-update ────────────────────────────────────────────────────────────
+
+class TestSensorUpdateRoute:
+
+    def test_valid_post_returns_200(self, client):
+        r = client.post("/sensor-update",
+                        json={"heart_rate": 80, "spo2": 98})
+        assert r.status_code == 200
+
+    def test_valid_post_returns_ok_status(self, client):
+        r = client.post("/sensor-update",
+                        json={"heart_rate": 80})
+        data = json.loads(r.data)
+        assert data["status"] == "ok"
+
+    def test_empty_body_returns_400(self, client):
+        r = client.post("/sensor-update", data=b"",
+                        content_type="application/json")
+        assert r.status_code == 400
+
+    def test_stores_data_accessible_via_getter(self, client):
+        from core.sensor_server import get_remote_sensor_data
+        client.post("/sensor-update", json={"heart_rate": 123, "spo2": 97})
+        data, ts = get_remote_sensor_data()
+        assert data.get("heart_rate") == 123
+        assert ts > 0
+
+    def test_options_preflight_returns_204(self, client):
+        r = client.options("/sensor-update")
+        assert r.status_code == 204
+
+    def test_partial_update_merges_not_replaces(self, client):
+        from core.sensor_server import get_remote_sensor_data
+        client.post("/sensor-update", json={"heart_rate": 75})
+        client.post("/sensor-update", json={"spo2": 99})
+        data, _ = get_remote_sensor_data()
+        assert data.get("heart_rate") == 75
+        assert data.get("spo2") == 99
+
+
+# ── /emg-event and /emg-events ────────────────────────────────────────────────
+
+class TestEMGEventRoutes:
+
+    def setup_method(self):
+        """Clear any leftover gesture state before each test."""
+        import core.sensor_server as ss
+        with ss._emg_lock:
+            ss._emg_events.clear()
+            ss._latest_gesture = None
+            ss._gesture_timestamp = None
+            ss._mayday_active = False
+            ss._mayday_data = None
+
+    def test_post_clench_returns_ok(self, client):
+        r = client.post("/emg-event", json={"gesture": "clench"})
+        assert r.status_code == 200
+        assert json.loads(r.data)["status"] == "ok"
+
+    def test_post_clench_stored_in_events(self, client):
+        client.post("/emg-event", json={"gesture": "clench"})
+        r = client.get("/emg-events")
+        data = json.loads(r.data)
+        assert any(e["gesture"] == "clench" for e in data["events"])
+
+    def test_get_emg_events_clears_queue(self, client):
+        client.post("/emg-event", json={"gesture": "clench"})
+        client.get("/emg-events")
+        r2 = client.get("/emg-events")
+        assert json.loads(r2.data)["events"] == []
+
+    def test_get_emg_events_returns_list(self, client):
+        r = client.get("/emg-events")
+        data = json.loads(r.data)
+        assert isinstance(data["events"], list)
+
+    def test_multiple_events_all_returned(self, client):
+        client.post("/emg-event", json={"gesture": "clench"})
+        client.post("/emg-event", json={"gesture": "clench"})
+        r = client.get("/emg-events")
+        data = json.loads(r.data)
+        assert len(data["events"]) == 2
+
+    def test_options_preflight_returns_204(self, client):
+        r = client.options("/emg-event")
+        assert r.status_code == 204
+
+    def test_half_clench_sets_mayday_active(self, client, sm):
+        client.post("/emg-event", json={"gesture": "half_clench"})
+        r = client.get("/sensors")
+        data = json.loads(r.data)
+        assert data["mayday_active"] is True
+
+    def test_sensors_includes_latest_gesture(self, client):
+        client.post("/emg-event", json={"gesture": "clench"})
+        r = client.get("/sensors")
+        data = json.loads(r.data)
+        assert "latest_gesture" in data
+        assert data["latest_gesture"] == "clench"
+
+    def test_sensors_includes_mayday_active(self, client):
+        r = client.get("/sensors")
+        data = json.loads(r.data)
+        assert "mayday_active" in data
+
+    def test_sensors_includes_gesture_timestamp(self, client):
+        client.post("/emg-event", json={"gesture": "clench"})
+        r = client.get("/sensors")
+        data = json.loads(r.data)
+        assert "gesture_timestamp" in data
+        assert data["gesture_timestamp"] is not None
+
+    def test_unknown_gesture_ignored(self, client):
+        r = client.post("/emg-event", json={"gesture": "wave"})
+        assert r.status_code == 200
+        r2 = client.get("/emg-events")
+        assert json.loads(r2.data)["events"] == []

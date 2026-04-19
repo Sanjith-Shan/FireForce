@@ -10,12 +10,16 @@ Cycles through four scenarios every 60 seconds:
 Run:  python core/sensor_server_mock.py
 """
 
+import json
+import logging
 import math
 import os
 import sys
 import time
 
 from flask import Flask, jsonify, request, send_from_directory
+
+logger = logging.getLogger("MockServer")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import config
@@ -154,6 +158,12 @@ def sensors():
         "noise_exposure_min": s["noise_exposure_min"],
         "thermal_exposure_s": thermal_s,
         "timestamp": int(time.time()),
+        "latest_gesture": None,
+        "gesture_timestamp": None,
+        "mayday_active": False,
+        "mayday_data": None,
+        "armband_connected": False,
+        "emg_connected": False,
     }
     return jsonify(payload)
 
@@ -197,11 +207,52 @@ _MOCK_FUELS = [
 ]
 
 
+_FUEL_PROMPT = (
+    "You are a wildfire fuel assessment AI assisting a firefighter building a firebreak. "
+    "Analyze this ground-level image.\n\n"
+    "Identify every visible fuel source that could feed a wildfire. For each, return:\n"
+    "- fuel_type: \"dead_grass\", \"pine_needle_litter\", \"dead_brush\", \"fallen_branches\", "
+    "\"chaparral\", \"living_brush\", \"small_trees\", or \"large_trees\"\n"
+    "- flammability: \"EXTREME\", \"HIGH\", \"MODERATE\", or \"LOW\"\n"
+    "- priority: 1-8 (1=clear first)\n"
+    "- box_2d: [ymin, xmin, ymax, xmax] normalized 0-1000\n"
+    "- position: natural description (\"3 meters ahead, slightly left\")\n"
+    "- action: what to do (\"scrape to mineral soil\", \"cut and remove\", \"fell with chainsaw\")\n\n"
+    "Return ONLY a JSON array sorted by priority. No markdown, no explanation."
+)
+
+
 @app.route("/analyze-fuel", methods=["POST", "OPTIONS"])
 def analyze_fuel():
     if request.method == "OPTIONS":
         return "", 204
-    return jsonify(_MOCK_FUELS)
+
+    image_bytes = request.data
+    if not image_bytes:
+        return jsonify([])
+
+    # Try real Gemini if key is configured
+    if config.GEMINI_API_KEY:
+        try:
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=config.GEMINI_API_KEY)
+            response = client.models.generate_content(
+                model=config.GEMINI_MODEL,
+                contents=[
+                    types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                    _FUEL_PROMPT,
+                ],
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            result = json.loads(response.text)
+            logger.info("Gemini returned %d fuel items", len(result))
+            return jsonify(result)
+        except Exception as exc:
+            logger.warning("Gemini call failed, using mock data: %s", exc)
+
+    # No key and no mock override requested — signal missing key clearly
+    return jsonify({"error": "no_key"})
 
 
 @app.route("/hud")
@@ -209,6 +260,31 @@ def analyze_fuel():
 def hud():
     hud_dir = os.path.join(os.path.dirname(__file__), "..", "hud")
     return send_from_directory(os.path.abspath(hud_dir), "index.html")
+
+
+@app.route("/hud/<path:filename>")
+def hud_static(filename):
+    hud_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hud"))
+    return send_from_directory(hud_dir, filename)
+
+
+@app.route("/sensor-update", methods=["POST", "OPTIONS"])
+def sensor_update():
+    if request.method == "OPTIONS":
+        return "", 204
+    return jsonify({"status": "ok"})
+
+
+@app.route("/emg-event", methods=["POST", "OPTIONS"])
+def emg_event():
+    if request.method == "OPTIONS":
+        return "", 204
+    return jsonify({"status": "ok"})
+
+
+@app.route("/emg-events")
+def emg_events():
+    return jsonify({"events": []})
 
 
 def _active_alerts(s: dict) -> list:

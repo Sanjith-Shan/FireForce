@@ -6,8 +6,8 @@ All thresholds, URLs, and settings in one place.
 import os
 
 # ─── Network ───────────────────────────────────────────────────────
-GLASSES_URL = os.environ.get("GLASSES_URL", "http://solspecs-glasses.local:5001")
 PHONE_GPS_URL = os.environ.get("PHONE_GPS_URL", "http://192.168.1.100:5000")
+SENSOR_SERVER_PORT = int(os.environ.get("SENSOR_SERVER_PORT", "8080"))
 MODE = os.environ.get("SOLSPECS_MODE", "simulate")  # "simulate" or "live"
 
 # ─── API Keys ──────────────────────────────────────────────────────
@@ -65,9 +65,10 @@ EMG_SUSTAIN_MS = 800         # hold duration for "scan" gesture
 EMG_COOLDOWN_MS = 2000       # min time between gestures
 
 # ─── Polling Intervals ────────────────────────────────────────────
-GLASSES_POLL_INTERVAL_S = 2.0
 PHONE_GPS_POLL_INTERVAL_S = 5.0
 MCU_SENSOR_HZ = 20
+FIRE_GRID_SIZE = 64
+FIRE_TICK_RATE = 2.0
 STATUS_CHECK_GREEN_MIN = 30
 STATUS_CHECK_YELLOW_MIN = 10
 STATUS_CHECK_ORANGE_MIN = 5
@@ -86,17 +87,19 @@ QUALCOMM_AI_TIMEOUT = 30.0                        # seconds
 # ─── Gemini ───────────────────────────────────────────────────────
 GEMINI_MODEL = "gemini-2.5-flash"
 
-SCENE_PROMPT = """You are an AI safety system for an outdoor worker. Analyze this image of their work environment.
-Report concisely (under 4 sentences):
-1. Sun exposure: Is the worker in direct sunlight or shade?
-2. Nearest shade: Where is the closest shaded or covered area, and roughly how far?
-3. Hazards: Any visible safety risks — unguarded edges, moving equipment, trip hazards, unstable ground?
-4. Hydration: Is water or a cooling station visible?
-Speak directly to the worker. Use simple directions like "to your left" or "behind you"."""
+SCENE_PROMPT = (
+    "You are an AI safety system for a firefighter in an active wildfire zone. "
+    "Analyze this image. Report: "
+    "1) Visible fire, smoke, or ember activity and direction. "
+    "2) Structural integrity of nearby buildings or terrain stability. "
+    "3) Egress routes — clear paths away from fire. "
+    "4) Hazards — downed power lines, gas lines, unstable structures, flashover risk. "
+    "Be concise, under 4 sentences."
+)
 
-CONVERSATION_SYSTEM_PROMPT = """You are an AI safety assistant built into a wearable for outdoor workers.
-You help them stay safe in extreme heat conditions and assess their work environment.
-Keep responses concise and spoken-word friendly. No markdown, no bullet points.
-Use simple directions and be specific about distances.
-Always prioritize heat safety and hazard warnings.
-If asked about their vitals, reference the most recent sensor data available."""
+CONVERSATION_SYSTEM_PROMPT = (
+    "You are an AI assistant for a firefighter during active wildfire operations. "
+    "You have access to their live biometric data and fire spread predictions. "
+    "Help them stay safe. Advise on heat stress, hydration, egress routes, and tactical decisions. "
+    "Keep responses under 3 sentences — they're in an active emergency."
+)

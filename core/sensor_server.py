@@ -38,6 +38,14 @@ _remote_sensor_data: dict = {}
 _remote_sensor_lock = threading.Lock()
 _remote_last_received: float = 0.0   # epoch float; 0 = never received
 
+# ── EMG connection state ──────────────────────────────────────────────────────
+_emg_connected: bool = False
+
+
+def set_emg_connected(connected: bool):
+    global _emg_connected
+    _emg_connected = connected
+
 
 def set_state_machine(sm):
     global _sm
@@ -125,6 +133,7 @@ def sensors():
     with _remote_sensor_lock:
         last_rx = _remote_last_received
     state["armband_connected"] = (last_rx > 0 and (time.time() - last_rx) < 5.0)
+    state["emg_connected"] = _emg_connected
     return jsonify(state)
 
 
@@ -230,8 +239,9 @@ def analyze_fuel():
         return "", 204
 
     image_bytes = request.data
+    logger.info("analyze-fuel received %d bytes", len(image_bytes) if image_bytes else 0)
     if not image_bytes:
-        return jsonify([])
+        return jsonify({"error": "no_image"})
 
     # Prefer the injected AIPipeline's already-initialised Gemini client
     with _ai_lock:
@@ -248,22 +258,48 @@ def analyze_fuel():
             logger.warning("Could not create Gemini client: %s", exc)
 
     if gemini_client is None:
-        return jsonify([])
+        return jsonify({"error": "no_key"})
 
-    try:
-        from google.genai import types
-        response = gemini_client.models.generate_content(
-            model=config.GEMINI_MODEL,
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-                _FUEL_PROMPT,
-            ],
-            config=types.GenerateContentConfig(response_mime_type="application/json"),
-        )
-        return jsonify(json.loads(response.text))
-    except Exception as exc:
-        logger.warning("analyze-fuel error: %s", exc)
-        return jsonify([])
+    from google.genai import types
+
+    # Try primary model first, fall back to lighter model on 503
+    _FALLBACK_MODELS = [config.GEMINI_MODEL, "gemini-2.0-flash", "gemini-1.5-flash"]
+    contents = [
+        types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+        _FUEL_PROMPT,
+    ]
+    gen_cfg = types.GenerateContentConfig(response_mime_type="application/json")
+
+    last_exc = None
+    for model in _FALLBACK_MODELS:
+        for attempt in range(2):
+            try:
+                response = gemini_client.models.generate_content(
+                    model=model, contents=contents, config=gen_cfg,
+                )
+                raw = response.text or ""
+                logger.info("Gemini[%s] raw response (%d chars): %.500s", model, len(raw), raw)
+                stripped = raw.strip()
+                if stripped.startswith("```"):
+                    stripped = stripped.split("\n", 1)[-1]
+                    if stripped.endswith("```"):
+                        stripped = stripped[: stripped.rfind("```")]
+                    stripped = stripped.strip()
+                result = json.loads(stripped)
+                logger.info("Gemini[%s] returned %d fuel items", model, len(result) if isinstance(result, list) else -1)
+                return jsonify(result)
+            except Exception as exc:
+                last_exc = exc
+                msg = str(exc)
+                if "503" in msg or "UNAVAILABLE" in msg:
+                    logger.warning("Gemini[%s] attempt %d unavailable, retrying: %s", model, attempt + 1, msg[:120])
+                    time.sleep(1.5 * (attempt + 1))
+                else:
+                    logger.error("Gemini[%s] error: %s", model, msg)
+                    break  # non-transient error, skip to next model
+
+    logger.error("All Gemini models failed: %s", last_exc)
+    return jsonify({"error": str(last_exc)})
 
 
 # ── HUD static files ──────────────────────────────────────────────────────────
