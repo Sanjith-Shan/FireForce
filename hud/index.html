@@ -80,6 +80,13 @@
     .alert-warning  { border-color:rgba(255,200,0,0.80)!important; box-shadow:0 0 28px rgba(255,200,0,0.24)!important; }
     .alert-info     { border-color:rgba(0,180,255,0.70)!important; box-shadow:0 0 22px rgba(0,180,255,0.18)!important; }
 
+    /* Evacuation compass widget */
+    #evac-compass { position:fixed; top:20px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.86); border:1px solid rgba(0,255,68,0.55); border-radius:50px; padding:6px 20px 7px; display:none; align-items:center; gap:10px; z-index:15; box-shadow:0 0 18px rgba(0,255,68,0.15); white-space:nowrap; }
+    #evac-compass.visible { display:flex; }
+    #evac-arrow-icon { font-size:20px; color:#00ff44; display:inline-block; transition:transform 0.5s ease; line-height:1; }
+    #evac-dir-text { font-size:10px; letter-spacing:2px; color:#00ff44; }
+    #evac-dist-text { font-size:9px; color:rgba(0,255,68,0.50); }
+
     /* SCAN button */
     #scan-btn { position:fixed; bottom:22px; left:22px; background:rgba(0,0,0,0.85); border:1px solid rgba(255,160,0,0.65); border-radius:8px; padding:10px 22px; color:#ffa000; font-family:inherit; font-size:11px; letter-spacing:3px; cursor:pointer; transition:all 0.2s; box-shadow:0 0 14px rgba(255,140,0,0.15); }
     #scan-btn:hover,#scan-btn:active { background:rgba(30,15,0,0.95); border-color:rgba(255,160,0,0.95); box-shadow:0 0 26px rgba(255,140,0,0.40); }
@@ -144,6 +151,13 @@
     <div class="timer-item"><div class="timer-label">THERMAL EXPOSURE</div><div class="timer-value" id="t-thermal">00:00</div></div>
     <div class="timer-item"><div class="timer-label">AIR REMAINING</div><div class="timer-value" id="t-air">30:00</div></div>
     <div class="timer-item"><div class="timer-label">ON SCENE</div><div class="timer-value" id="t-scene">00:00</div></div>
+  </div>
+
+  <!-- ── Evacuation Compass (top-center) ──────────────────── -->
+  <div id="evac-compass">
+    <span id="evac-arrow-icon">▲</span>
+    <span id="evac-dir-text">NORTH</span>
+    <span id="evac-dist-text"></span>
   </div>
 
   <div id="alert-banner"><div id="alert-level"></div><div id="alert-text"></div></div>
@@ -252,6 +266,9 @@ let currentSensorData = null;   // latest sensor payload — read by VR panels
 let currentAlertText  = '';     // current active alert (for VR panel)
 let currentAlertLevel = '';
 let activeMode = null;          // 'vr' | 'ar' | 'laptop'
+let evacRoute    = null;        // current evac path [{x,y}…], null if blocked
+let lastEvacDir  = null;        // last announced cardinal direction
+let prevRoutePts = 0;           // waypoint count, used to detect major reroutes
 let audioCtx   = null;
 let ambientStarted = false;
 
@@ -406,17 +423,25 @@ function _drainAlerts() {
 function checkProximity(cells) {
     let minDist=Infinity;
     for(let y=0;y<GRID_SIZE;y++) for(let x=0;x<GRID_SIZE;x++) if(cells[y][x].state===1){ const d=Math.hypot(x-FIGHTER_X,y-FIGHTER_Y); if(d<minDist)minDist=d; }
-    if(minDist>20) return;
+    if(minDist>5) return;
     if(simTick-proxAlertTick<24) return;
+    proxAlertTick=simTick;
+
     if(minDist<=1){
-        proxAlertTick=simTick;
         showAlert('FIRE AT YOUR POSITION — EVACUATE IMMEDIATELY','critical');
         playAlarm().then(()=>speechMgr.speak('Fire at your position. Evacuate immediately.','critical'));
+    } else if(minDist<=2){
+        showAlert('IMMEDIATE EVACUATION — FOLLOW GREEN ROUTE','critical');
+        playAlarm().then(()=>speechMgr.speak('Immediate evacuation required. Follow the green route.','critical'));
     } else if(minDist<=3){
-        proxAlertTick=simTick;
         const e=Math.max(1,Math.round(minDist/0.6));
-        showAlert(`FIRE APPROACHING YOUR POSITION — EST. ${e} MIN`,'critical');
+        showAlert(`FIRE APPROACHING — EST. ${e} MIN`,'critical');
         playAlarm().then(()=>speechMgr.speak('Fire approaching your position. Begin egress immediately.','critical'));
+    } else {
+        // 3 < dist ≤ 5
+        const mins=Math.max(1,Math.round(minDist*2));
+        showAlert('FIRE APPROACHING — CONSIDER EVACUATION ROUTE','warning');
+        speechMgr.speak(`Fire approaching. Recommended evacuation in ${mins} simulated minutes.`);
     }
 }
 
@@ -434,6 +459,32 @@ function renderFire(cells) {
         for(let py=0;py<CELL_PX;py++){const rb=((cy*CELL_PX+py)*W+cx*CELL_PX)*4;for(let px=0;px<CELL_PX;px++){const i=rb+px*4;d[i]=r;d[i+1]=g;d[i+2]=b;d[i+3]=255;}}
     }
     fctx.putImageData(img,0,0);
+
+    // Evacuation route overlay
+    if(evacRoute&&evacRoute.length>=2){
+        const half=CELL_PX/2;
+        fctx.save();
+        fctx.strokeStyle='#00ff44'; fctx.lineWidth=2.5; fctx.setLineDash([5,3]);
+        fctx.shadowColor='#00ff44'; fctx.shadowBlur=6;
+        fctx.beginPath();
+        evacRoute.forEach((p,i)=>{
+            const px=p.x*CELL_PX+half, py=p.y*CELL_PX+half;
+            i===0?fctx.moveTo(px,py):fctx.lineTo(px,py);
+        });
+        fctx.stroke();
+        // Arrowhead at final waypoint
+        const n=evacRoute.length-1;
+        const ex=evacRoute[n].x*CELL_PX+half, ey=evacRoute[n].y*CELL_PX+half;
+        const px2=evacRoute[Math.max(0,n-1)].x*CELL_PX+half, py2=evacRoute[Math.max(0,n-1)].y*CELL_PX+half;
+        const ha=Math.atan2(ey-py2,ex-px2);
+        fctx.setLineDash([]); fctx.fillStyle='#00ff44';
+        fctx.beginPath(); fctx.moveTo(ex,ey);
+        fctx.lineTo(ex-9*Math.cos(ha-0.4),ey-9*Math.sin(ha-0.4));
+        fctx.lineTo(ex-9*Math.cos(ha+0.4),ey-9*Math.sin(ha+0.4));
+        fctx.closePath(); fctx.fill();
+        fctx.restore();
+    }
+
     const fx=FIGHTER_X*CELL_PX+CELL_PX/2, fy=FIGHTER_Y*CELL_PX+CELL_PX/2;
     fctx.beginPath(); fctx.arc(fx,fy,6,0,Math.PI*2); fctx.fillStyle='#0088ff'; fctx.fill();
     fctx.strokeStyle='#ffffff'; fctx.lineWidth=2; fctx.stroke();
@@ -1006,6 +1057,82 @@ function enterLaptop() {
 }
 
 
+/* ── EVAC ROUTE HELPERS ─────────────────────────────── */
+function calcBearing(fx, fy, tx, ty) {
+    // Grid: x=col, y=row; row increases downward → screen south
+    const dx = tx - fx, dy = ty - fy;
+    // Convert to geographic: north = -y, east = +x
+    const rad = Math.atan2(dx, -dy);
+    return ((rad * 180 / Math.PI) + 360) % 360;
+}
+
+function bearingToCardinal(deg) {
+    const dirs = ['N','NE','E','SE','S','SW','W','NW'];
+    return dirs[Math.round(deg / 45) % 8];
+}
+
+function updateEvacArrow(route) {
+    const compass = document.getElementById('evac-compass');
+    if (!compass) return;
+    if (!route || route.length < 2) {
+        compass.classList.remove('visible');
+        return;
+    }
+    compass.classList.add('visible');
+    const bearing = calcBearing(
+        route[0].x, route[0].y,
+        route[Math.min(4, route.length - 1)].x,
+        route[Math.min(4, route.length - 1)].y
+    );
+    const cardinal = bearingToCardinal(bearing);
+    const totalDist = Math.round(route.length * (64 / grid.size));
+    document.getElementById('evac-arrow-icon').style.transform = `rotate(${bearing}deg)`;
+    document.getElementById('evac-dir-text').textContent  = cardinal;
+    document.getElementById('evac-dist-text').textContent = `~${totalDist}m`;
+}
+
+function updateEvacRoute() {
+    const state = grid.getState();
+    // User position: center of grid
+    const mid = Math.floor(grid.size / 2);
+    const route = grid.calculateEvacRoute(mid, mid, 10);
+
+    if (!route) {
+        // No safe route
+        if (evacRoute !== null) {
+            // Transition from having route to no route
+            playAlarm().then(()=>{
+                speechMgr.speak('Warning. No safe evacuation route. Request aerial extraction.', 10);
+            });
+        }
+        evacRoute = null;
+        updateEvacArrow(null);
+        return;
+    }
+
+    const cardinal = bearingToCardinal(calcBearing(
+        route[0].x, route[0].y,
+        route[Math.min(4, route.length - 1)].x,
+        route[Math.min(4, route.length - 1)].y
+    ));
+
+    const isNewRoute     = evacRoute === null;
+    const majorReroute   = Math.abs(route.length - prevRoutePts) > 8;
+    const dirChanged     = cardinal !== lastEvacDir;
+
+    if (isNewRoute) {
+        speechMgr.speak(`Evacuation route calculated. Safest egress is to the ${cardinal}.`, 7);
+    } else if (majorReroute || dirChanged) {
+        speechMgr.speak(`Route updated. Head ${cardinal}.`, 6);
+    }
+
+    lastEvacDir  = cardinal;
+    prevRoutePts = route.length;
+    evacRoute    = route;
+    updateEvacArrow(route);
+}
+
+
 /* ── XR probe — update landing buttons ─────────────── */
 (async()=>{
     const hint=$('landing-hint');
@@ -1033,9 +1160,11 @@ renderFire(grid.getState());
 updateTimers();
 checkProximity(grid.getState());
 pollSensors();
-setInterval(pollSensors,  SENSOR_POLL_MS);
-setInterval(fireTick,     FIRE_TICK_MS);
-setInterval(updateTimers, 1000);
+setInterval(pollSensors,     SENSOR_POLL_MS);
+setInterval(fireTick,        FIRE_TICK_MS);
+setInterval(updateTimers,    1000);
+setInterval(updateEvacRoute, 5000);
+setTimeout(updateEvacRoute,  2000);   // first run after fire has seeded a bit
 
 // Keyboard shortcut: F = scan fuel
 document.addEventListener('keydown', e=>{
