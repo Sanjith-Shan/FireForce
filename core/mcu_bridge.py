@@ -251,6 +251,82 @@ class SerialBridge(MCUBridge):
             self._serial.close()
 
 
+class HTTPBridge(MCUBridge):
+    """
+    Receives sensor data posted by the UNO Q armband over WiFi.
+    Polls sensor_server's in-memory dict every 100 ms and fires callbacks
+    whenever fresh data arrives.
+
+    Accepts an optional on_glasses_data callback for the ambient fields
+    (ambient_temp_c, ambient_humidity_pct) that are included in the payload.
+    """
+
+    STALE_SECS = 5.0  # seconds before data is considered stale
+
+    def __init__(self, get_data_fn):
+        super().__init__()
+        self._get_data = get_data_fn   # () -> (dict, float)
+        self._thread = None
+        self._last_ts: float = 0.0
+        self.on_glasses_data = None    # optional callback(dict)
+
+    def start(self):
+        self._running = True
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True,
+                                        name="HTTPBridge")
+        self._thread.start()
+        logger.info("HTTP bridge started (polling for UNO Q data)")
+
+    def _poll_loop(self):
+        from core.heat_stress import thermistor_raw_to_celsius
+
+        while self._running:
+            data, ts = self._get_data()
+            if ts > self._last_ts and data:
+                self._last_ts = ts
+                self._dispatch(data)
+            time.sleep(0.1)
+
+    def _dispatch(self, raw: dict):
+        from core.heat_stress import thermistor_raw_to_celsius
+
+        # Convert skin_temp_raw → Celsius; fall back to raw if conversion fails
+        skin_raw = int(raw.get("skin_temp_raw", 620))
+        try:
+            skin_temp_raw_val = skin_raw if skin_raw > 0 else 620
+        except (TypeError, ValueError):
+            skin_temp_raw_val = 620
+
+        mcu_frame = {
+            "emg_raw":       int(raw.get("emg_raw",  512)),
+            "heart_rate":    int(raw.get("heart_rate", 0)),
+            "spo2":          int(raw.get("spo2",       0)),
+            "accel_x":       float(raw.get("accel_x",  0.0)),
+            "accel_y":       float(raw.get("accel_y",  0.0)),
+            "accel_z":       float(raw.get("accel_z", -1.0)),
+            "skin_temp_raw": skin_temp_raw_val,
+            "sweat_raw":     int(raw.get("sweat_raw",  0)),
+            "gsr_raw":       int(raw.get("gsr_raw",  450)),
+        }
+        if self.on_sensor_data:
+            self.on_sensor_data(mcu_frame)
+
+        # Ambient fields — feed glasses data path if callback provided
+        if self.on_glasses_data and (
+            "ambient_temp_c" in raw or "ambient_humidity_pct" in raw
+        ):
+            glasses_frame = {
+                "ambient_temp_c":      float(raw.get("ambient_temp_c",      28.0)),
+                "ambient_humidity_pct": float(raw.get("ambient_humidity_pct", 60.0)),
+                "is_direct_sun":       bool(raw.get("is_direct_sun",        False)),
+                "noise_above_threshold": bool(raw.get("noise_above_threshold", False)),
+            }
+            self.on_glasses_data(glasses_frame)
+
+    def send_command(self, command: dict):
+        pass  # HTTP push to UNO Q not yet implemented
+
+
 # ─── Test ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

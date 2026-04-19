@@ -29,22 +29,33 @@ from core.heat_stress import compute_wbgt_estimate
 
 def parse_args():
     p = argparse.ArgumentParser(description="SolSpecs wearable heat safety system")
-    p.add_argument("--simulate",    action="store_true", help="Run without hardware")
+    # Mode flags (mutually exclusive; --simulate wins if combined)
+    mode_g = p.add_mutually_exclusive_group()
+    mode_g.add_argument("--simulate", action="store_true",
+                        help="Full simulation — no hardware needed (default)")
+    mode_g.add_argument("--live",     action="store_true",
+                        help="Live mode — read sensors from STM32 over USB serial")
+    mode_g.add_argument("--remote",   action="store_true",
+                        help="Remote mode — UNO Q POSTs sensor data over WiFi to /sensor-update")
     p.add_argument("--interactive", action="store_true", help="Keyboard scenario control")
     p.add_argument("--https",       action="store_true",
                    help="Serve HUD over HTTPS on port 8443 (needed for Quest 3 WebXR)")
     p.add_argument("--emg",         action="store_true",
-                   help="Enable Mindrove EMG gesture bridge (real hardware) or mock in simulate mode")
+                   help="Enable real Mindrove EMG bridge via LSL (omit for MockEMGBridge)")
     p.add_argument("--loglevel", default="INFO", choices=["DEBUG", "INFO", "WARNING"])
     return p.parse_args()
 
 
 # ── Subsystem builders ────────────────────────────────────────────────────────
 
-def build_mcu_bridge(simulate: bool):
+def build_mcu_bridge(args, simulate: bool):
     if simulate:
         from core.mcu_bridge import SimulatorBridge
         return SimulatorBridge(update_hz=20)
+    if getattr(args, "remote", False):
+        from core.mcu_bridge import HTTPBridge
+        from core.sensor_server import get_remote_sensor_data
+        return HTTPBridge(get_data_fn=get_remote_sensor_data)
     from core.mcu_bridge import SerialBridge
     return SerialBridge(port="/dev/ttyACM0", baud=115200)
 
@@ -212,16 +223,23 @@ def _snapshot_vitals(sm: StateMachine, glasses_data: dict, mcu_data: dict) -> di
 def main():
     args = parse_args()
     simulate = args.simulate or args.interactive or (config.MODE == "simulate")
+    remote   = getattr(args, "remote", False)
 
     logging.getLogger().setLevel(args.loglevel)
-    logger.info(f"SolSpecs starting [mode={'simulate' if simulate else 'live'}]")
+    if simulate:
+        mode_label = "simulate"
+    elif remote:
+        mode_label = "remote"
+    else:
+        mode_label = "live"
+    logger.info(f"SolSpecs starting [mode={mode_label}]")
 
     # ── Build subsystems ──────────────────────────────────────────────
     sm      = StateMachine()
     audio   = build_audio(simulate)
-    mcu     = build_mcu_bridge(simulate)
-    glasses = build_glasses_client(simulate)
-    gps     = build_gps_client(simulate)
+    mcu     = build_mcu_bridge(args, simulate)
+    glasses = build_glasses_client(simulate or remote)
+    gps     = build_gps_client(simulate or remote)
     ai      = build_ai_pipeline(simulate)
     emg     = build_emg_bridge(simulate) if args.emg else None
 
@@ -285,6 +303,10 @@ def main():
     mcu.on_sensor_data     = on_mcu_data
     glasses.on_sensor_data = on_glasses_data
 
+    # In remote mode, ambient data also comes from the UNO Q HTTP payload
+    if remote and hasattr(mcu, "on_glasses_data"):
+        mcu.on_glasses_data = on_glasses_data
+
     def gps_poll_loop():
         while True:
             sm.feed_gps(gps.location)
@@ -312,8 +334,7 @@ def main():
 
         def _on_clench():
             logger.info("EMG: Clench → fuel scan")
-            record_gesture_event("clench")
-            # Also trigger the AI scan callback
+            record_gesture_event("clench")   # queued for HUD /emg-events poll
             if sm.on_ai_scan:
                 sm.on_ai_scan()
 
@@ -323,16 +344,16 @@ def main():
             gps_loc = sm._gps_location
             state = sm.get_current_state()
             record_mayday({
-                "heart_rate": state.get("heart_rate"),
-                "spo2": state.get("spo2"),
+                "heart_rate":  state.get("heart_rate"),
+                "spo2":        state.get("spo2"),
                 "skin_temp_c": state.get("skin_temp_c"),
-                "heat_tier": state.get("heat_tier"),
-                "gps_lat": gps_loc.lat if gps_loc else None,
-                "gps_lng": gps_loc.lng if gps_loc else None,
-                "timestamp": int(time.time()),
+                "heat_tier":   state.get("heat_tier"),
+                "gps_lat":     gps_loc.lat if gps_loc else None,
+                "gps_lng":     gps_loc.lng if gps_loc else None,
+                "timestamp":   int(time.time()),
             })
 
-        emg.on_clench = _on_clench
+        emg.on_clench      = _on_clench
         emg.on_half_clench = _on_half_clench
         emg.start()
         logger.info("EMG bridge started")
@@ -343,6 +364,7 @@ def main():
 
     audio.speak("SolSpecs initialized. Monitoring heat stress.", priority=PRIORITY_NORMAL)
     logger.info("All subsystems running")
+    _print_startup_banner(args, mode_label)
 
     # ── Interactive or signal-wait ────────────────────────────────────
 
@@ -361,6 +383,32 @@ def main():
     if emg:
         emg.stop()
     logger.info("Goodbye.")
+
+
+def _print_startup_banner(args, mode_label: str):
+    import socket
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+    except OSError:
+        ip = "0.0.0.0"
+
+    hud_port    = 8443 if args.https else config.SENSOR_SERVER_PORT
+    hud_scheme  = "https" if args.https else "http"
+    hud_url     = f"{hud_scheme}://{ip}:{hud_port}/hud"
+    sensor_url  = f"http://{ip}:{config.SENSOR_SERVER_PORT}/sensor-update"
+    emg_url     = f"http://{ip}:{config.SENSOR_SERVER_PORT}/emg-event"
+    emg_status  = "--emg (real Mindrove LSL)" if args.emg else "mock (keyboard C/H)"
+
+    print("\n" + "╔" + "═"*46 + "╗")
+    print(  "║" + "       SolSpecs ForeSight v1.0".center(46) + "║")
+    print(  "╠" + "═"*46 + "╣")
+    print(f"║  HUD:        {hud_url:<32}║")
+    print(f"║  Sensors:    {sensor_url:<32}║")
+    print(f"║  EMG Events: {emg_url:<32}║")
+    print(  "║" + " "*46 + "║")
+    print(f"║  Mode: --{mode_label:<36}║")
+    print(f"║  EMG:  {emg_status:<38}║")
+    print(  "╚" + "═"*46 + "╝\n")
 
 
 def _run_until_signal():

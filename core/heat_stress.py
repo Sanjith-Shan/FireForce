@@ -135,12 +135,14 @@ def compute_heat_stress_tier(
         score += 1
 
     # ── Physiological: SpO2 (inverted — lower is worse) ─────────────
-    if spo2 < config.SPO2_CRITICAL:      # < 90 %
-        score += 4
-    elif spo2 < config.SPO2_CONCERN:     # < 93 %
-        score += 2
-    elif spo2 < config.SPO2_MILD:        # < 95 %
-        score += 1
+    # spo2 == 0 means sensor not ready — skip to avoid false critical alarm
+    if spo2 > 0:
+        if spo2 < config.SPO2_CRITICAL:      # < 90 %
+            score += 4
+        elif spo2 < config.SPO2_CONCERN:     # < 93 %
+            score += 2
+        elif spo2 < config.SPO2_MILD:        # < 95 %
+            score += 1
 
     # ── Physiological: skin temperature ─────────────────────────────
     if skin_temp > config.SKIN_TEMP_CRITICAL:   # > 38.5 °C

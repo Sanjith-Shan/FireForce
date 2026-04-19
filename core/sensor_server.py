@@ -33,6 +33,11 @@ _gesture_timestamp = None   # epoch float of latest gesture
 _mayday_active = False
 _mayday_data = None
 
+# ── Remote sensor state (HTTPBridge / UNO Q WiFi) ─────────────────────────────
+_remote_sensor_data: dict = {}
+_remote_sensor_lock = threading.Lock()
+_remote_last_received: float = 0.0   # epoch float; 0 = never received
+
 
 def set_state_machine(sm):
     global _sm
@@ -62,6 +67,15 @@ def record_mayday(data: dict):
     with _emg_lock:
         _mayday_active = True
         _mayday_data = data
+
+
+def get_remote_sensor_data() -> tuple:
+    """
+    Returns (data_dict, last_received_epoch) for the HTTPBridge to poll.
+    Thread-safe snapshot.
+    """
+    with _remote_sensor_lock:
+        return dict(_remote_sensor_data), _remote_last_received
 
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
@@ -108,6 +122,9 @@ def sensors():
     state["gesture_timestamp"] = gt
     state["mayday_active"] = ma
     state["mayday_data"] = md
+    with _remote_sensor_lock:
+        last_rx = _remote_last_received
+    state["armband_connected"] = (last_rx > 0 and (time.time() - last_rx) < 5.0)
     return jsonify(state)
 
 
@@ -136,6 +153,22 @@ def fire_config():
         "grid_size": config.FIRE_GRID_SIZE,
         "tick_rate": config.FIRE_TICK_RATE,
     })
+
+
+# ── Remote sensor ingestion (UNO Q → laptop over WiFi) ───────────────────────
+
+@app.route("/sensor-update", methods=["POST", "OPTIONS"])
+def sensor_update():
+    if request.method == "OPTIONS":
+        return "", 204
+    global _remote_last_received
+    payload = request.get_json(silent=True)
+    if not payload:
+        return jsonify({"status": "error", "msg": "no JSON body"}), 400
+    with _remote_sensor_lock:
+        _remote_sensor_data.update(payload)
+        _remote_last_received = time.time()
+    return jsonify({"status": "ok", "received_at": _remote_last_received})
 
 
 # ── EMG gesture events ───────────────────────────────────────────────────────

@@ -366,10 +366,10 @@ const TIER_COLOR = {green:'#00e87a',yellow:'#ffd700',orange:'#ff8c00',red:'#ff33
 function updateVitals(d) {
     currentSensorData = d;
     const hr=d.heart_rate, spo2=d.spo2, tmp=d.skin_temp_c, wbgt=d.wbgt, hyd=d.hydration, tier=d.heat_tier;
-    $('v-hr').textContent=hr; $('v-hr').style.color=hrCol(hr);
-    $('b-hr').style.width=Math.min(100,hr/180*100)+'%'; $('b-hr').style.background=hrCol(hr);
-    $('v-spo2').textContent=spo2; $('v-spo2').style.color=o2Col(spo2);
-    $('b-spo2').style.width=Math.max(0,Math.min(100,(spo2-85)/15*100))+'%'; $('b-spo2').style.background=o2Col(spo2);
+    $('v-hr').textContent=hr>0?hr:'--'; $('v-hr').style.color=hr>0?hrCol(hr):'#888';
+    $('b-hr').style.width=hr>0?Math.min(100,hr/180*100)+'%':'0%'; $('b-hr').style.background=hrCol(hr);
+    $('v-spo2').textContent=spo2>0?spo2:'--'; $('v-spo2').style.color=spo2>0?o2Col(spo2):'#888';
+    $('b-spo2').style.width=spo2>0?Math.max(0,Math.min(100,(spo2-85)/15*100))+'%':'0%'; $('b-spo2').style.background=o2Col(spo2);
     $('v-temp').textContent=tmp.toFixed(1); $('v-temp').style.color=tmpCol(tmp);
     $('b-temp').style.width=Math.max(0,Math.min(100,(tmp-35)/5*100))+'%'; $('b-temp').style.background=tmpCol(tmp);
     $('v-wbgt').textContent=wbgt.toFixed(1)+' °C'; $('v-wbgt').style.color=wgtCol(wbgt);
@@ -383,7 +383,11 @@ function updateVitals(d) {
         showAlert('FALL DETECTED — SENDING LOCATION','critical');
         speechMgr.speak('Fall detected. Are you okay? MAYDAY will activate in 15 seconds.','critical');
     }
-    if(spo2<90) showAlert('LOW BLOOD OXYGEN — CHECK MASK','critical');
+    if(spo2>0 && spo2<90) showAlert('LOW BLOOD OXYGEN — CHECK MASK','critical');
+    // Armband connectivity
+    if(d.armband_connected===false && d.mayday_active!==true){
+        showAlert('ARMBAND DISCONNECTED — CHECK WIFI','warning');
+    }
     // Remote MAYDAY (triggered by EMG on backend)
     if(d.mayday_active && !maydayFired) triggerMayday();
 }
@@ -847,8 +851,8 @@ function drawVitalsVR() {
     ff(11,'rgba(0,210,155,0.70)'); ctx.fillText('◈ VITALS',14,24);
     const d=currentSensorData;
     if(!d){ ff(12,'#ff4444'); ctx.textAlign='center'; ctx.fillText('◉ NO SIGNAL',W/2,H/2); ctx.textAlign='left'; vrVitalsTex.needsUpdate=true; return; }
-    [['HR',String(d.heart_rate),'bpm',hrCol(d.heart_rate)],
-     ['SPO2',String(d.spo2),'%',o2Col(d.spo2)],
+    [['HR',d.heart_rate>0?String(d.heart_rate):'--','bpm',d.heart_rate>0?hrCol(d.heart_rate):'#888888'],
+     ['SPO2',d.spo2>0?String(d.spo2):'--','%',d.spo2>0?o2Col(d.spo2):'#888888'],
      ['TEMP',d.skin_temp_c?.toFixed(1)||'—','°C',tmpCol(d.skin_temp_c)]
     ].forEach(([lbl,val,unit,col],i)=>{
         const y=58+i*60;
