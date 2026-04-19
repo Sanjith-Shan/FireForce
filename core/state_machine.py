@@ -491,6 +491,42 @@ class StateMachine:
         offset = 36.5 - slope * 620
         return slope * raw + offset
 
+    def get_current_state(self) -> dict:
+        """Return a full snapshot of computed state for the sensor HTTP server."""
+        with self._sensor_lock:
+            mcu = dict(self._mcu_data)
+            glasses = dict(self._glasses_data)
+        with self._tier_lock:
+            tier = self._tier
+
+        temp_c = glasses.get("ambient_temp_c") or 28.0
+        humidity = glasses.get("ambient_humidity_pct") or 60.0
+        in_sun = glasses.get("is_direct_sun", False)
+        wbgt = compute_wbgt_estimate(temp_c, humidity, in_sun)
+        skin_temp = self._skin_raw_to_celsius(mcu.get("skin_temp_raw", 620))
+        thermal_s = int(time.time() - self._session_start)
+
+        return {
+            "heart_rate": mcu.get("heart_rate", 72),
+            "spo2": mcu.get("spo2", 98),
+            "skin_temp_c": round(skin_temp, 1),
+            "ambient_temp_c": round(temp_c, 1),
+            "ambient_humidity_pct": round(humidity, 1),
+            "wbgt": round(wbgt, 1),
+            "heat_tier": tier,
+            "hydration": "ok",
+            "sweat_level": mcu.get("sweat_raw", 0),
+            "gsr": mcu.get("gsr_raw", 450),
+            "accel_x": mcu.get("accel_x", 0.05),
+            "accel_y": mcu.get("accel_y", -0.05),
+            "accel_z": mcu.get("accel_z", -0.97),
+            "fall_detected": bool(mcu.get("fall_detected", False)),
+            "sun_exposure_min": int(self.sun_exposure_minutes),
+            "noise_exposure_min": int(self.noise_hours_today * 60),
+            "thermal_exposure_s": thermal_s,
+            "timestamp": int(time.time()),
+        }
+
     @property
     def current_tier(self) -> str:
         with self._tier_lock:
