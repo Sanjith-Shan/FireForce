@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SolSpecs — Firefighter HUD</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width:100%; height:100%; overflow:hidden; background:transparent; color:#e0e0e0; font-family:'Share Tech Mono','Courier New',Courier,monospace; }
+
+    /* Three.js canvas — behind HUD, shown in VR + laptop */
+    #xr-canvas { position:fixed; top:0; left:0; width:100%; height:100%; display:none; z-index:0; }
+    #xr-canvas.active { display:block; }
+
+    /* Landing overlay */
+    #landing { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:100; background:radial-gradient(ellipse at 55% 38%, #091409 0%, #050908 100%); }
+    #landing.hidden { display:none; }
+    .landing-title { font-size:13px; letter-spacing:5px; color:rgba(0,210,155,0.80); margin-bottom:10px; }
+    .landing-sub   { font-size:9px; letter-spacing:3px; color:rgba(0,210,155,0.35); margin-bottom:36px; }
+    .landing-btns  { display:flex; gap:20px; margin-bottom:20px; }
+    .mode-btn { font-family:inherit; font-size:12px; letter-spacing:3px; padding:14px 34px; border-radius:8px; cursor:pointer; transition:all 0.2s; }
+    #btn-vr { background:rgba(120,20,0,0.88); border:1px solid rgba(255,80,0,0.70); color:#ff8040; box-shadow:0 0 18px rgba(255,60,0,0.20); }
+    #btn-vr:hover { background:rgba(180,30,0,0.96); box-shadow:0 0 32px rgba(255,80,0,0.45); border-color:rgba(255,100,0,0.90); }
+    #btn-ar { background:rgba(0,20,30,0.88); border:1px solid rgba(0,210,155,0.60); color:#00d29b; box-shadow:0 0 18px rgba(0,210,155,0.15); }
+    #btn-ar:hover { background:rgba(0,30,20,0.96); box-shadow:0 0 30px rgba(0,210,155,0.38); border-color:rgba(0,210,155,0.90); }
+    #btn-ar.hidden { display:none; }
+    #btn-vr.hidden { display:none; }
+    #landing-hint { font-size:9px; letter-spacing:2px; color:rgba(0,210,155,0.35); text-align:center; max-width:420px; line-height:1.8; }
+
+    /* DOM HUD sits above Three.js canvas */
+    #hud { display:none; z-index:10; }
+
+    /* Panel base */
+    .panel { position:fixed; background:rgba(0,0,0,0.80); border:1px solid rgba(0,210,155,0.30); border-radius:6px; padding:10px 14px 12px; box-shadow:0 0 20px rgba(0,210,155,0.05),inset 0 1px 0 rgba(255,255,255,0.03); }
+    .panel-title { font-size:9px; letter-spacing:3px; color:rgba(0,210,155,0.65); border-bottom:1px solid rgba(0,210,155,0.14); padding-bottom:5px; margin-bottom:9px; text-transform:uppercase; }
+
+    /* Vitals */
+    #vitals { top:20px; left:20px; width:214px; overflow:hidden; }
+    @keyframes flash-green  { 0%,50%,100%{border-color:rgba(0,232,122,.70);box-shadow:0 0 22px rgba(0,232,122,.30);}25%,75%{border-color:rgba(0,210,155,.30);} }
+    @keyframes flash-yellow { 0%,50%,100%{border-color:rgba(255,215,0,.80);box-shadow:0 0 26px rgba(255,215,0,.35);}25%,75%{border-color:rgba(0,210,155,.30);} }
+    @keyframes flash-orange { 0%,50%,100%{border-color:rgba(255,140,0,.90);box-shadow:0 0 30px rgba(255,140,0,.40);}25%,75%{border-color:rgba(0,210,155,.30);} }
+    @keyframes flash-red    { 0%,50%,100%{border-color:rgba(255,40,40,.95);box-shadow:0 0 36px rgba(255,40,40,.50);}25%,75%{border-color:rgba(0,210,155,.30);} }
+    .flash-green  { animation:flash-green  1.6s 3 !important; } .flash-yellow { animation:flash-yellow 1.0s 3 !important; }
+    .flash-orange { animation:flash-orange 0.8s 4 !important; } .flash-red    { animation:flash-red    0.5s 5 !important; }
+    #no-signal { display:none; position:absolute; top:0;left:0;right:0; background:rgba(0,0,0,0.88); border-radius:6px 6px 0 0; text-align:center; padding:3px 6px; font-size:9px; letter-spacing:2px; color:#ff4444; }
+    #no-signal.visible { display:block; }
+    .vrow { display:grid; grid-template-columns:44px 42px 22px 1fr; align-items:center; column-gap:4px; margin-bottom:6px; }
+    .vlabel { font-size:10px; color:#4a5e55; letter-spacing:1px; } .vvalue { font-size:18px; line-height:1; transition:color 0.6s; } .vunit { font-size:9px; color:#3a4e45; }
+    .bar-track { height:4px; background:rgba(255,255,255,0.07); border-radius:2px; overflow:hidden; }
+    .bar-fill  { height:100%; border-radius:2px; transition:width 0.7s ease, background-color 0.6s; }
+    .vrow2 { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+    .vrow2 .vlabel { font-size:10px; color:#4a5e55; letter-spacing:1px; } .vrow2-val { font-size:13px; transition:color 0.6s; }
+    #tier-badge { display:flex; align-items:center; gap:9px; margin-top:9px; padding-top:8px; border-top:1px solid rgba(0,210,155,0.13); }
+    #tier-dot { width:11px; height:11px; border-radius:50%; flex-shrink:0; transition:background 0.6s, box-shadow 0.6s; }
+    #tier-sublabel { font-size:8px; color:#3a4e45; letter-spacing:2px; } #tier-value { font-size:17px; letter-spacing:2px; transition:color 0.6s; }
+
+    /* Fire map */
+    #fire-panel { top:20px; right:20px; padding:10px; }
+    #fire-canvas { display:block; width:320px; height:320px; image-rendering:pixelated; image-rendering:crisp-edges; }
+    #scrubber-wrap { margin-top:8px; } #scrubber-label { font-size:9px; letter-spacing:2px; color:rgba(0,210,155,0.55); text-align:center; min-height:13px; margin-bottom:3px; }
+    #scrubber { width:100%; accent-color:#00d29b; cursor:pointer; height:3px; }
+    .scrubber-ticks { display:flex; justify-content:space-between; font-size:8px; color:#2a3a32; margin-top:2px; }
+
+    /* Timers */
+    #timers { bottom:216px; left:20px; display:flex; align-items:stretch; padding:8px 0; }
+    .timer-item { display:flex; flex-direction:column; align-items:center; padding:0 18px; gap:3px; }
+    .timer-item+.timer-item { border-left:1px solid rgba(0,210,155,0.18); }
+    .timer-label { font-size:8px; color:#3a4e45; letter-spacing:2px; } .timer-value { font-size:22px; letter-spacing:1px; transition:color 0.5s; }
+    #t-thermal { color:#c8c8c8; } #t-air { color:#ff8c00; } #t-scene { color:#c8c8c8; }
+
+    /* Alert banner */
+    #alert-banner { position:fixed; bottom:110px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.90); border:1px solid rgba(255,140,0,0.65); border-radius:6px; padding:9px 26px 11px; text-align:center; min-width:300px; max-width:560px; box-shadow:0 0 30px rgba(255,140,0,0.18); pointer-events:none; opacity:0; transition:opacity 0.35s ease; }
+    #alert-banner.show { opacity:1; }
+    #alert-level { font-size:9px; letter-spacing:3px; margin-bottom:3px; } #alert-text { font-size:13px; letter-spacing:1px; color:#ffffff; line-height:1.45; }
+    .alert-critical { border-color:rgba(255,40,40,0.90)!important; box-shadow:0 0 36px rgba(255,40,40,0.38)!important; }
+    .alert-warning  { border-color:rgba(255,200,0,0.80)!important; box-shadow:0 0 28px rgba(255,200,0,0.24)!important; }
+    .alert-info     { border-color:rgba(0,180,255,0.70)!important; box-shadow:0 0 22px rgba(0,180,255,0.18)!important; }
+
+    /* MAYDAY */
+    #mayday-btn { position:fixed; bottom:22px; right:22px; width:78px; height:78px; border-radius:50%; background:rgba(160,0,0,0.88); border:3px solid #ff2222; color:#fff; font-family:inherit; font-size:11px; letter-spacing:2px; font-weight:bold; line-height:1.2; cursor:pointer; animation:mayday-idle 3s ease-in-out infinite; transition:background 0.12s, box-shadow 0.12s; }
+    #mayday-btn:hover, #mayday-btn:active { background:rgba(255,0,0,0.96); box-shadow:0 0 44px rgba(255,0,0,0.70); }
+    @keyframes mayday-idle   { 0%,100%{box-shadow:0 0 18px rgba(255,0,0,0.40);}50%{box-shadow:0 0 32px rgba(255,0,0,0.65);} }
+    #mayday-btn.activated { background:rgba(255,0,0,0.96); animation:mayday-active 0.45s ease-in-out infinite; }
+    @keyframes mayday-active { 0%,100%{box-shadow:0 0 55px rgba(255,0,0,0.90);}50%{box-shadow:0 0 16px rgba(255,0,0,0.30);} }
+  </style>
+</head>
+<body>
+
+<canvas id="xr-canvas"></canvas>
+
+<!-- ═══ LANDING OVERLAY ═══ -->
+<div id="landing">
+  <div class="landing-title">◈ SOLSPECS WILDFIRE HUD</div>
+  <div class="landing-sub">FIREFIGHTER TACTICAL SYSTEM v2.0</div>
+  <div class="landing-btns">
+    <button class="mode-btn" id="btn-vr" onclick="enterVR()">▶ ENTER VR MODE</button>
+    <button class="mode-btn" id="btn-ar" onclick="enterAR()">▶ ENTER AR MODE</button>
+  </div>
+  <div id="landing-hint">Checking XR support...</div>
+</div>
+
+<!-- ═══ DOM HUD (AR + laptop) ═══ -->
+<div id="hud">
+  <div id="vitals" class="panel">
+    <div id="no-signal">◉ NO SIGNAL</div>
+    <div class="panel-title">◈ VITALS</div>
+    <div class="vrow"><span class="vlabel">HR</span><span class="vvalue" id="v-hr">—</span><span class="vunit">bpm</span><div class="bar-track"><div class="bar-fill" id="b-hr" style="width:0%"></div></div></div>
+    <div class="vrow"><span class="vlabel">SpO₂</span><span class="vvalue" id="v-spo2">—</span><span class="vunit">%</span><div class="bar-track"><div class="bar-fill" id="b-spo2" style="width:0%"></div></div></div>
+    <div class="vrow"><span class="vlabel">TEMP</span><span class="vvalue" id="v-temp">—</span><span class="vunit">°C</span><div class="bar-track"><div class="bar-fill" id="b-temp" style="width:0%"></div></div></div>
+    <div class="vrow2"><span class="vlabel">WBGT</span><span class="vrow2-val" id="v-wbgt">— °C</span></div>
+    <div class="vrow2"><span class="vlabel">HYDRATION</span><span class="vrow2-val" id="v-hyd">—</span></div>
+    <div id="tier-badge"><div id="tier-dot"></div><div><div id="tier-sublabel">HEAT TIER</div><div id="tier-value">—</div></div></div>
+  </div>
+
+  <div id="fire-panel" class="panel">
+    <div class="panel-title">◈ FIRE MAP</div>
+    <canvas id="fire-canvas" width="320" height="320"></canvas>
+    <div id="scrubber-wrap">
+      <div id="scrubber-label">▶ LIVE</div>
+      <input type="range" id="scrubber" min="0" max="30" value="0" step="5">
+      <div class="scrubber-ticks"><span>LIVE</span><span>+5</span><span>+10</span><span>+15</span><span>+20</span><span>+25</span><span>+30m</span></div>
+    </div>
+  </div>
+
+  <div id="timers" class="panel">
+    <div class="timer-item"><div class="timer-label">THERMAL EXPOSURE</div><div class="timer-value" id="t-thermal">00:00</div></div>
+    <div class="timer-item"><div class="timer-label">AIR REMAINING</div><div class="timer-value" id="t-air">30:00</div></div>
+    <div class="timer-item"><div class="timer-label">ON SCENE</div><div class="timer-value" id="t-scene">00:00</div></div>
+  </div>
+
+  <div id="alert-banner"><div id="alert-level"></div><div id="alert-text"></div></div>
+
+  <button id="mayday-btn" onclick="triggerMayday()">MAYDAY</button>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════
+     FIRE SIMULATION ENGINE (inlined)
+════════════════════════════════════════════════════════ -->
+<script>
+'use strict';
+function _mulberry32(seed){return function(){seed|=0;seed=(seed+0x6D2B79F5)|0;let t=Math.imul(seed^(seed>>>15),1|seed);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296;};}
+class FireGrid{
+    static FUEL_WATER=0;static FUEL_GRASS=1;static FUEL_BRUSH=2;static FUEL_FOREST=3;static FUEL_URBAN=4;static FUEL_ROCK=5;
+    static BASE_RATES=[0,0.6,0.4,0.3,0.2,0];
+    static BURN_DURATION=[Infinity,3,8,15,10,Infinity];
+    constructor(size){this.size=size;this.cells=null;this._init=null;}
+    generateTerrain(seed){
+        const rng=_mulberry32(seed),N=this.size;
+        this.cells=Array.from({length:N},(_,y)=>Array.from({length:N},(_,x)=>({fuel_type:3,elevation:0,state:0,burn_ticks:0})));
+        for(let y=0;y<N;y++)for(let x=0;x<N;x++){const g=(x+(N-1-y))/(2*(N-1));this.cells[y][x].elevation=g*55+rng()*30;}
+        for(let p=0;p<3;p++){const snap=this.cells.map(r=>r.map(c=>c.elevation));for(let y=0;y<N;y++)for(let x=0;x<N;x++){let s=0,c=0;for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const ny=y+dy,nx=x+dx;if(ny>=0&&ny<N&&nx>=0&&nx<N){s+=snap[ny][nx];c++;}}this.cells[y][x].elevation=Math.round(s/c);}}
+        const CX=Math.floor(N*0.44),CY=Math.floor(N*0.50);
+        for(let y=0;y<N;y++)for(let x=0;x<N;x++){const dx=x-CX,dy=y-CY;if((dx*dx)/(10*10)+(dy*dy)/(8*8)<1)this.cells[y][x].fuel_type=1;}
+        let rx=Math.floor(N*0.63);
+        for(let y=0;y<N;y++){rx+=Math.floor(rng()*3)-1;rx=Math.max(Math.floor(N*0.50),Math.min(Math.floor(N*0.80),rx));for(let w=-1;w<=1;w++){const nx=rx+w;if(nx>=0&&nx<N){this.cells[y][nx].fuel_type=0;this.cells[y][nx].elevation=Math.max(0,this.cells[y][nx].elevation-20);}}}
+        for(const[bx,by,r]of[[CX-15,CY-5,5],[CX+12,CY+9,6],[CX-8,CY+14,5],[CX+6,CY-14,5],[Math.floor(N*.1),Math.floor(N*.7),5],[Math.floor(N*.2),Math.floor(N*.85),6],[Math.floor(N*.7),Math.floor(N*.75),5]])
+            for(let y=0;y<N;y++)for(let x=0;x<N;x++)if(this.cells[y][x].fuel_type===3&&Math.hypot(x-bx,y-by)<r)this.cells[y][x].fuel_type=2;
+        this._init=this._clone(this.cells);this.clearingX=CX;this.clearingY=CY;
+    }
+    setFire(x,y){if(x<0||x>=this.size||y<0||y>=this.size)return;const c=this.cells[y][x];if(c.state===0&&FireGrid.BASE_RATES[c.fuel_type]!==0){c.state=1;c.burn_ticks=0;}}
+    tick(wd,ws){this.cells=FireGrid._step(this.cells,this.size,wd,ws);}
+    getState(){return this.cells;}
+    predictFuture(mins,wd,ws){let c=this._clone(this.cells);for(let t=0;t<mins;t++)c=FireGrid._step(c,this.size,wd,ws);return c;}
+    reset(){if(this._init)this.cells=this._clone(this._init);}
+    _clone(c){return c.map(r=>r.map(x=>({...x})));}
+    static _step(cells,size,wd,ws){
+        const rad=wd*Math.PI/180,wxv=Math.sin(rad),wyv=-Math.cos(rad);
+        const ss=Math.min(Math.max(ws/15,0),2.5);
+        const next=cells.map(r=>r.map(c=>({...c})));
+        for(let y=0;y<size;y++)for(let x=0;x<size;x++){
+            const c=cells[y][x];if(c.state!==1)continue;
+            next[y][x].burn_ticks=c.burn_ticks+1;
+            if(next[y][x].burn_ticks>=FireGrid.BURN_DURATION[c.fuel_type])next[y][x].state=2;
+            for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+                if(!dx&&!dy)continue;
+                const nx=x+dx,ny=y+dy;if(nx<0||nx>=size||ny<0||ny>=size)continue;
+                const nb=cells[ny][nx];if(nb.state!==0)continue;
+                const br=FireGrid.BASE_RATES[nb.fuel_type];if(!br)continue;
+                const mag=Math.sqrt(dx*dx+dy*dy),dot=(wxv*dx+wyv*dy)/mag;
+                const rf=dot>0.5?2.0:dot>-0.5?1.0:0.3;
+                const wf=1+(rf-1)*ss;
+                const sf=Math.max(0.5,Math.min(3.0,1+0.5*(nb.elevation-c.elevation)/10));
+                if(Math.random()<br*wf*sf){next[ny][nx].state=1;next[ny][nx].burn_ticks=0;}
+            }
+        }
+        return next;
+    }
+}
+</script>
+
+
+<!-- ═══════════════════════════════════════════════════════
+     HUD APPLICATION
+════════════════════════════════════════════════════════ -->
+<script>
+'use strict';
+
+/* ── CONFIG ─────────────────────────────────────────── */
+const SENSOR_SERVER   = 'http://localhost:8080';
+const PANORAMA_URL    = 'panorama.jpg';
+const SENSOR_POLL_MS  = 2000;
+const FIRE_TICK_MS    = 500;
+const DEMO_WIND_DIR   = 45;
+const DEMO_WIND_SPEED = 15;
+const DEMO_SEED       = 42;
+const GRID_SIZE       = 64;
+const CELL_PX         = 5;
+
+/* ── DEMO BOOT ──────────────────────────────────────── */
+const grid = new FireGrid(GRID_SIZE);
+grid.generateTerrain(DEMO_SEED);
+grid.setFire(1,62); grid.setFire(2,61); grid.setFire(3,62);
+for(let i=0;i<20;i++) grid.tick(DEMO_WIND_DIR, DEMO_WIND_SPEED);
+const FIGHTER_X = grid.clearingX;
+const FIGHTER_Y = grid.clearingY;
+
+/* ── STATE ──────────────────────────────────────────── */
+let simTick=20, lastTier=null, scrubActive=false, scrubTimer=null;
+let proxAlertTick=-99, maydayFired=false;
+const SCENE_START = Date.now();
+let thermalOffset=0, airSec=1800, lastPollAt=0;
+const alertQ=[]; let alertId=null;
+let currentSensorData = null;   // latest sensor payload — read by VR panels
+let currentAlertText  = '';     // current active alert (for VR panel)
+let currentAlertLevel = '';
+let activeMode = null;          // 'vr' | 'ar' | 'laptop'
+let audioCtx   = null;
+let ambientStarted = false;
+
+/* ── SPEECH MANAGER ──────────────────────────────────── */
+class SpeechManager {
+    constructor() { this.speaking=false; this.queue=[]; }
+    speak(text, priority='normal') {
+        if(priority==='critical'){ window.speechSynthesis.cancel(); this.queue=[]; }
+        if(this.speaking && priority!=='critical'){ this.queue.push(text); return; }
+        this._speak(text);
+    }
+    _speak(text) {
+        this.speaking=true;
+        const u=new SpeechSynthesisUtterance(text);
+        u.rate=1.1; u.pitch=0.9; u.volume=1.0;
+        u.onend=()=>{ this.speaking=false; if(this.queue.length>0)this._speak(this.queue.shift()); };
+        window.speechSynthesis.speak(u);
+    }
+}
+const speechMgr = new SpeechManager();
+
+/* ── AUDIO HELPERS ───────────────────────────────────── */
+function _getAudioCtx() {
+    if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    if(audioCtx.state==='suspended') audioCtx.resume();
+    return audioCtx;
+}
+
+// Two-tone alarm: 800/600 Hz alternating, 200ms each, 3 reps
+// Returns Promise that resolves when alarm finishes (~1.2s)
+function playAlarm() {
+    return new Promise(resolve=>{
+        const ctx=_getAudioCtx();
+        const tones=[800,600];
+        let t=ctx.currentTime;
+        for(let rep=0;rep<3;rep++) tones.forEach(freq=>{
+            const osc=ctx.createOscillator(), g=ctx.createGain();
+            osc.frequency.value=freq; osc.type='square';
+            g.gain.setValueAtTime(0.28,t);
+            g.gain.exponentialRampToValueAtTime(0.001,t+0.185);
+            osc.connect(g); g.connect(ctx.destination);
+            osc.start(t); osc.stop(t+0.2); t+=0.2;
+        });
+        setTimeout(resolve, Math.round((t-ctx.currentTime)*1000)+50);
+    });
+}
+
+// Layered filtered white noise: deep rumble + high crackle
+function startAmbientAudio() {
+    if(ambientStarted) return; ambientStarted=true;
+    const ctx=_getAudioCtx();
+    const bufLen=ctx.sampleRate*2;
+    const buf=ctx.createBuffer(1,bufLen,ctx.sampleRate);
+    const data=buf.getChannelData(0);
+    for(let i=0;i<bufLen;i++) data[i]=Math.random()*2-1;
+
+    // Rumble layer
+    const rumbleSrc=ctx.createBufferSource(); rumbleSrc.buffer=buf; rumbleSrc.loop=true;
+    const rumbleFilt=ctx.createBiquadFilter(); rumbleFilt.type='lowpass'; rumbleFilt.frequency.value=180;
+    const rumbleGain=ctx.createGain(); rumbleGain.gain.value=0.045;
+    rumbleSrc.connect(rumbleFilt); rumbleFilt.connect(rumbleGain); rumbleGain.connect(ctx.destination);
+    rumbleSrc.start();
+
+    // Crackle layer
+    const crackleSrc=ctx.createBufferSource(); crackleSrc.buffer=buf; crackleSrc.loop=true; crackleSrc.playbackRate.value=1.4;
+    const crackleFilt=ctx.createBiquadFilter(); crackleFilt.type='bandpass'; crackleFilt.frequency.value=1600; crackleFilt.Q.value=0.6;
+    const crackleGain=ctx.createGain(); crackleGain.gain.value=0.018;
+    crackleSrc.connect(crackleFilt); crackleFilt.connect(crackleGain); crackleGain.connect(ctx.destination);
+    crackleSrc.start();
+}
+
+/* ── UTILS ──────────────────────────────────────────── */
+const $ = id => document.getElementById(id);
+const fmt = s => { s=Math.max(0,Math.floor(s)); return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; };
+const hrCol  = v => v>=140?'#ff3333':v>=120?'#ff8c00':v>=90?'#ffd700':'#00e87a';
+const o2Col  = v => v<90?'#ff3333':v<93?'#ff8c00':v<95?'#ffd700':'#00e87a';
+const tmpCol = v => v>=38.5?'#ff3333':v>=37.5?'#ff8c00':v>=37?'#ffd700':'#00e87a';
+const wgtCol = v => v>=32?'#ff3333':v>=28?'#ff8c00':v>=26?'#ffd700':'#00e87a';
+const hydCol = v => v==='critical'?'#ff3333':v==='low'?'#ffd700':'#00e87a';
+const TIER_COLOR = {green:'#00e87a',yellow:'#ffd700',orange:'#ff8c00',red:'#ff3333'};
+
+/* ── VITALS UPDATE (DOM) ─────────────────────────────── */
+function updateVitals(d) {
+    currentSensorData = d;
+    const hr=d.heart_rate, spo2=d.spo2, tmp=d.skin_temp_c, wbgt=d.wbgt, hyd=d.hydration, tier=d.heat_tier;
+    $('v-hr').textContent=hr; $('v-hr').style.color=hrCol(hr);
+    $('b-hr').style.width=Math.min(100,hr/180*100)+'%'; $('b-hr').style.background=hrCol(hr);
+    $('v-spo2').textContent=spo2; $('v-spo2').style.color=o2Col(spo2);
+    $('b-spo2').style.width=Math.max(0,Math.min(100,(spo2-85)/15*100))+'%'; $('b-spo2').style.background=o2Col(spo2);
+    $('v-temp').textContent=tmp.toFixed(1); $('v-temp').style.color=tmpCol(tmp);
+    $('b-temp').style.width=Math.max(0,Math.min(100,(tmp-35)/5*100))+'%'; $('b-temp').style.background=tmpCol(tmp);
+    $('v-wbgt').textContent=wbgt.toFixed(1)+' °C'; $('v-wbgt').style.color=wgtCol(wbgt);
+    $('v-hyd').textContent=hyd.toUpperCase(); $('v-hyd').style.color=hydCol(hyd);
+    const tc=TIER_COLOR[tier]||'#00e87a';
+    $('tier-value').textContent=tier.toUpperCase(); $('tier-value').style.color=tc;
+    $('tier-dot').style.background=tc; $('tier-dot').style.boxShadow=`0 0 8px ${tc}`;
+    if(tier!==lastTier){ if(lastTier!==null){ flashVitals(tier); showTierAlert(tier); } lastTier=tier; }
+    if(d.thermal_exposure_s!=null){ thermalOffset=d.thermal_exposure_s; lastPollAt=Date.now(); }
+    if(d.fall_detected){
+        showAlert('FALL DETECTED — SENDING LOCATION','critical');
+        speechMgr.speak('Fall detected. Are you okay? MAYDAY will activate in 15 seconds.','critical');
+    }
+    if(spo2<90) showAlert('LOW BLOOD OXYGEN — CHECK MASK','critical');
+}
+
+function setNoSignal(v) { $('no-signal').classList.toggle('visible',v); if(v) currentSensorData=null; }
+
+function flashVitals(tier) {
+    const p=$('vitals');
+    p.classList.remove('flash-green','flash-yellow','flash-orange','flash-red');
+    void p.offsetWidth;
+    p.classList.add(`flash-${tier}`);
+    p.addEventListener('animationend',()=>p.classList.remove(`flash-${tier}`),{once:true});
+}
+
+function showTierAlert(tier) {
+    const map={
+        yellow:['HEAT STRESS WARNING — HYDRATE NOW','warning'],
+        orange:['HEAT STRESS ELEVATED — SHADE BREAK NOW','warning'],
+        red:   ['DANGER — HEAT STRESS CRITICAL — PULL BACK','critical'],
+        green: ['HEAT STRESS NORMALISING — GOOD WORK','info'],
+    };
+    const e=map[tier]; if(e) showAlert(e[0],e[1]);
+    // Voice
+    if(tier==='yellow'){
+        speechMgr.speak('Attention. Heat stress level yellow. Hydrate and monitor your condition.');
+    } else if(tier==='orange'){
+        playAlarm().then(()=>speechMgr.speak('Warning. Heat stress level orange. Take a break immediately.'));
+    } else if(tier==='red'){
+        playAlarm().then(()=>speechMgr.speak('Danger. Heat stress critical. Stop all work. Evacuate now.','critical'));
+    }
+}
+
+/* ── ALERT QUEUE ─────────────────────────────────────── */
+function showAlert(text, level='warning') { alertQ.push({text,level}); if(!alertId) _drainAlerts(); }
+
+function _drainAlerts() {
+    if(alertQ.length===0){ alertId=null; currentAlertText=''; currentAlertLevel=''; return; }
+    const {text,level}=alertQ.shift();
+    currentAlertText=text; currentAlertLevel=level;
+    const b=$('alert-banner');
+    const labels={critical:'⚠  CRITICAL',warning:'⚠  WARNING',info:'◈  INFO'};
+    b.className='';
+    $('alert-level').textContent=labels[level]??'⚠';
+    $('alert-level').style.color=level==='critical'?'#ff4444':level==='warning'?'#ffd700':'#44aaff';
+    $('alert-text').textContent=text;
+    b.classList.add('show',`alert-${level}`);
+    alertId=setTimeout(()=>{ b.classList.remove('show'); setTimeout(_drainAlerts,380); },5000);
+}
+
+/* ── FIRE PROXIMITY ──────────────────────────────────── */
+function checkProximity(cells) {
+    let minDist=Infinity;
+    for(let y=0;y<GRID_SIZE;y++) for(let x=0;x<GRID_SIZE;x++) if(cells[y][x].state===1){ const d=Math.hypot(x-FIGHTER_X,y-FIGHTER_Y); if(d<minDist)minDist=d; }
+    if(minDist>20) return;
+    if(simTick-proxAlertTick<24) return;
+    if(minDist<=1){
+        proxAlertTick=simTick;
+        showAlert('FIRE AT YOUR POSITION — EVACUATE IMMEDIATELY','critical');
+        playAlarm().then(()=>speechMgr.speak('Fire at your position. Evacuate immediately.','critical'));
+    } else if(minDist<=3){
+        proxAlertTick=simTick;
+        const e=Math.max(1,Math.round(minDist/0.6));
+        showAlert(`FIRE APPROACHING YOUR POSITION — EST. ${e} MIN`,'critical');
+        playAlarm().then(()=>speechMgr.speak('Fire approaching your position. Begin egress immediately.','critical'));
+    }
+}
+
+/* ── FIRE CANVAS RENDER (DOM + source for VR texture) ── */
+const fcanvas=$('fire-canvas'), fctx=fcanvas.getContext('2d');
+const FUEL_RGB=[[26,68,136],[200,180,86],[74,110,42],[29,77,26],[119,119,119],[153,153,153]];
+
+function renderFire(cells) {
+    const W=GRID_SIZE*CELL_PX, img=fctx.createImageData(W,W), d=img.data;
+    for(let cy=0;cy<GRID_SIZE;cy++) for(let cx=0;cx<GRID_SIZE;cx++){
+        const cell=cells[cy][cx]; let r,g,b;
+        if(cell.state===1){r=255;g=80;b=0;}
+        else if(cell.state===2){r=42;g=14;b=6;}
+        else{const base=FUEL_RGB[cell.fuel_type]??FUEL_RGB[5];const ef=Math.max(0.55,Math.min(1.10,0.60+0.50*(cell.elevation/85)));r=Math.min(255,Math.round(base[0]*ef));g=Math.min(255,Math.round(base[1]*ef));b=Math.min(255,Math.round(base[2]*ef));}
+        for(let py=0;py<CELL_PX;py++){const rb=((cy*CELL_PX+py)*W+cx*CELL_PX)*4;for(let px=0;px<CELL_PX;px++){const i=rb+px*4;d[i]=r;d[i+1]=g;d[i+2]=b;d[i+3]=255;}}
+    }
+    fctx.putImageData(img,0,0);
+    const fx=FIGHTER_X*CELL_PX+CELL_PX/2, fy=FIGHTER_Y*CELL_PX+CELL_PX/2;
+    fctx.beginPath(); fctx.arc(fx,fy,6,0,Math.PI*2); fctx.fillStyle='#0088ff'; fctx.fill();
+    fctx.strokeStyle='#ffffff'; fctx.lineWidth=2; fctx.stroke();
+    const rad=DEMO_WIND_DIR*Math.PI/180, vx=Math.sin(rad), vy=-Math.cos(rad);
+    const W2=GRID_SIZE*CELL_PX, ox=W2-16, oy=16, len=16, tx=ox+vx*len, ty=oy+vy*len, ang=Math.atan2(vy,vx);
+    fctx.save(); fctx.strokeStyle='#ffdd00'; fctx.fillStyle='#ffdd00'; fctx.lineWidth=2;
+    fctx.beginPath(); fctx.moveTo(ox,oy); fctx.lineTo(tx,ty); fctx.stroke();
+    fctx.beginPath(); fctx.moveTo(tx,ty); fctx.lineTo(tx-7*Math.cos(ang-0.4),ty-7*Math.sin(ang-0.4)); fctx.lineTo(tx-7*Math.cos(ang+0.4),ty-7*Math.sin(ang+0.4)); fctx.closePath(); fctx.fill();
+    fctx.font='bold 8px Courier New'; fctx.fillStyle='#ffdd00'; fctx.textAlign='center'; fctx.fillText('WIND',ox,oy+11); fctx.textAlign='left'; fctx.restore();
+}
+
+/* ── SCRUBBER ────────────────────────────────────────── */
+const scrubber=$('scrubber'), scrubLabel=$('scrubber-label');
+scrubber.addEventListener('input',()=>{
+    const mins=parseInt(scrubber.value);
+    if(mins===0){scrubActive=false;scrubLabel.textContent='▶ LIVE';renderFire(grid.getState());return;}
+    scrubActive=true; scrubLabel.textContent=`⏩ PREDICTION +${mins} MIN`;
+    clearTimeout(scrubTimer);
+    scrubTimer=setTimeout(()=>renderFire(grid.predictFuture(mins,DEMO_WIND_DIR,DEMO_WIND_SPEED)),50);
+});
+function _snapScrubber(){if(!scrubActive)return;scrubber.value=0;scrubActive=false;scrubLabel.textContent='▶ LIVE';renderFire(grid.getState());}
+scrubber.addEventListener('mouseup',_snapScrubber);
+scrubber.addEventListener('touchend',_snapScrubber);
+
+/* ── TIMERS ──────────────────────────────────────────── */
+function updateTimers() {
+    const elapsed=Math.floor((Date.now()-SCENE_START)/1000);
+    const thermalSec=thermalOffset+(lastPollAt>0?Math.floor((Date.now()-lastPollAt)/1000):elapsed);
+    airSec=Math.max(0,1800-elapsed);
+    $('t-thermal').textContent=fmt(thermalSec);
+    $('t-air').textContent=fmt(airSec);
+    $('t-scene').textContent=fmt(elapsed);
+    const ae=$('t-air');
+    if(airSec<300)ae.style.color='#ff3333';else if(airSec<600)ae.style.color='#ffd700';else ae.style.color='#ff8c00';
+}
+
+/* ── SENSOR POLL ─────────────────────────────────────── */
+async function pollSensors() {
+    try {
+        const res=await fetch(`${SENSOR_SERVER}/sensors`,{signal:AbortSignal.timeout(3000)});
+        if(!res.ok)throw new Error(`HTTP ${res.status}`);
+        updateVitals(await res.json());
+        setNoSignal(false);
+    } catch(_){ setNoSignal(true); }
+}
+
+/* ── FIRE TICK ───────────────────────────────────────── */
+function fireTick() {
+    grid.tick(DEMO_WIND_DIR,DEMO_WIND_SPEED); simTick++;
+    if(!scrubActive){ renderFire(grid.getState()); checkProximity(grid.getState()); }
+    if(vrFireTex) vrFireTex.needsUpdate=true; // mark VR fire texture dirty
+}
+
+/* ── MAYDAY ──────────────────────────────────────────── */
+function triggerMayday() {
+    if(maydayFired)return; maydayFired=true;
+    $('mayday-btn').classList.add('activated');
+    $('mayday-btn').innerHTML='MAYDAY<br>SENT';
+    showAlert('MAYDAY ACTIVATED — COORDINATES SENT','critical');
+    playAlarm().then(()=>speechMgr.speak('MAYDAY activated. Coordinates transmitted.','critical'));
+}
+
+
+/* ═══════════════════════════════════════════════════════
+   THREE.JS SCENE
+════════════════════════════════════════════════════════ */
+let renderer3, scene3, camera3, orbitControls3;
+let particles=[];
+let vrHudGroup=null;
+let vrVitalsTex=null, vrFireTex=null, vrTimersTex=null, vrAlertTex=null;
+let vrVitalsC=null, vrTimersC=null, vrAlertC=null;
+
+function initThreeScene() {
+    const canvas=$('xr-canvas');
+    renderer3=new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
+    renderer3.setPixelRatio(window.devicePixelRatio);
+    renderer3.setSize(window.innerWidth,window.innerHeight);
+    renderer3.xr.enabled=true;
+
+    scene3=new THREE.Scene();
+    camera3=new THREE.PerspectiveCamera(75,window.innerWidth/window.innerHeight,0.01,1000);
+    camera3.position.set(0,1.6,0);
+
+    buildPanorama();
+    buildParticles();
+
+    window.addEventListener('resize',()=>{
+        camera3.aspect=window.innerWidth/window.innerHeight;
+        camera3.updateProjectionMatrix();
+        renderer3.setSize(window.innerWidth,window.innerHeight);
+    });
+}
+
+/* Panorama sphere */
+function buildPanorama() {
+    const geo=new THREE.SphereGeometry(500,60,40);
+    const mat=new THREE.MeshBasicMaterial({side:THREE.BackSide});
+    mat.map=makeFallbackTex(); // show immediately
+    new THREE.TextureLoader().load(PANORAMA_URL,
+        tex=>{mat.map=tex;mat.needsUpdate=true;},
+        undefined,
+        ()=>{ /* fallback already applied */ }
+    );
+    scene3.add(new THREE.Mesh(geo,mat));
+}
+
+function makeFallbackTex() {
+    const c=document.createElement('canvas'); c.width=2048; c.height=1024;
+    const ctx=c.getContext('2d');
+    const g=ctx.createLinearGradient(0,0,0,1024);
+    g.addColorStop(0,'#100400'); g.addColorStop(0.30,'#2d0e00'); g.addColorStop(0.52,'#581800');
+    g.addColorStop(0.68,'#a03000'); g.addColorStop(0.80,'#c85000'); g.addColorStop(1.00,'#1a0800');
+    ctx.fillStyle=g; ctx.fillRect(0,0,2048,1024);
+    // orange glow pools
+    [350,800,1300,1700,200].forEach((bx,i)=>{
+        const by=660+Math.sin(i*1.4)*70;
+        const rg=ctx.createRadialGradient(bx,by,0,bx,by,240);
+        rg.addColorStop(0,'rgba(255,110,0,0.30)'); rg.addColorStop(1,'rgba(255,50,0,0)');
+        ctx.fillStyle=rg; ctx.fillRect(0,0,2048,1024);
+    });
+    // silhouette treeline
+    ctx.fillStyle='#0a0400';
+    for(let x=0;x<2048;x+=3){
+        const h=110+Math.sin(x*0.025)*35+Math.sin(x*0.075)*18;
+        ctx.fillRect(x,1024-Math.round(h),3,Math.round(h));
+    }
+    return new THREE.CanvasTexture(c);
+}
+
+/* Particle sprites */
+function makeFlametex() {
+    const c=document.createElement('canvas'); c.width=c.height=64;
+    const ctx=c.getContext('2d');
+    const g=ctx.createRadialGradient(32,32,0,32,32,32);
+    g.addColorStop(0,'rgba(255,220,80,1)'); g.addColorStop(0.25,'rgba(255,110,0,0.9)');
+    g.addColorStop(0.65,'rgba(200,35,0,0.45)'); g.addColorStop(1,'rgba(180,15,0,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,64,64);
+    return new THREE.CanvasTexture(c);
+}
+
+function makeSmokeTex() {
+    const c=document.createElement('canvas'); c.width=c.height=64;
+    const ctx=c.getContext('2d');
+    const g=ctx.createRadialGradient(32,32,0,32,32,32);
+    g.addColorStop(0,'rgba(88,88,88,0.46)'); g.addColorStop(0.6,'rgba(60,60,60,0.20)'); g.addColorStop(1,'rgba(40,40,40,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,64,64);
+    return new THREE.CanvasTexture(c);
+}
+
+function buildParticles() {
+    const ftex=makeFlametex(), stex=makeSmokeTex();
+    // 300 flame sprites
+    for(let i=0;i<300;i++){
+        const s=new THREE.Sprite(new THREE.SpriteMaterial({map:ftex,transparent:true,depthWrite:false}));
+        const angle=Math.random()*Math.PI*2, r=3+Math.random()*5;
+        s.position.set(Math.cos(angle)*r, Math.random()*0.3, Math.sin(angle)*r);
+        s.scale.setScalar(0.07+Math.random()*0.12);
+        s.userData={type:'flame',vy:0.003+Math.random()*0.005,angle,r,maxY:2.5+Math.random()*1.2};
+        scene3.add(s); particles.push(s);
+    }
+    // 100 smoke sprites
+    for(let i=0;i<100;i++){
+        const s=new THREE.Sprite(new THREE.SpriteMaterial({map:stex,transparent:true,depthWrite:false}));
+        const angle=Math.random()*Math.PI*2, r=2+Math.random()*7;
+        s.position.set(Math.cos(angle)*r, Math.random()*2+0.5, Math.sin(angle)*r);
+        s.scale.setScalar(0.14+Math.random()*0.24);
+        s.userData={type:'smoke',vy:0.001+Math.random()*0.002,angle,r,maxY:5+Math.random()*1.2};
+        scene3.add(s); particles.push(s);
+    }
+}
+
+function tickParticles() {
+    particles.forEach(p=>{
+        const u=p.userData; p.position.y+=u.vy;
+        if(u.type==='flame'){
+            p.material.opacity=0.3+Math.random()*0.6;
+            p.position.x=Math.cos(u.angle)*u.r+(Math.random()-0.5)*0.06;
+            p.position.z=Math.sin(u.angle)*u.r+(Math.random()-0.5)*0.06;
+        } else {
+            p.material.opacity=0.12+Math.random()*0.22;
+        }
+        if(p.position.y>u.maxY){ p.position.y=(u.type==='smoke'?0.4:0); }
+    });
+}
+
+/* VR HUD planes */
+function initVRHUD() {
+    vrVitalsC=Object.assign(document.createElement('canvas'),{width:400,height:280});
+    vrTimersC=Object.assign(document.createElement('canvas'),{width:500,height:90});
+    vrAlertC =Object.assign(document.createElement('canvas'),{width:600,height:90});
+
+    vrVitalsTex=new THREE.CanvasTexture(vrVitalsC);
+    vrFireTex  =new THREE.CanvasTexture(fcanvas);  // reuse live fire canvas
+    vrTimersTex=new THREE.CanvasTexture(vrTimersC);
+    vrAlertTex =new THREE.CanvasTexture(vrAlertC);
+
+    const mkPlane=(w,h,tex)=>new THREE.Mesh(
+        new THREE.PlaneGeometry(w,h),
+        new THREE.MeshBasicMaterial({map:tex,transparent:true,depthTest:false,side:THREE.DoubleSide})
+    );
+    vrHudGroup=new THREE.Group();
+    const vp=mkPlane(0.40,0.28,vrVitalsTex); vp.position.set(-0.35, 0.15,-0.70);
+    const fp=mkPlane(0.34,0.34,vrFireTex);   fp.position.set( 0.35, 0.15,-0.70);
+    const tp=mkPlane(0.50,0.09,vrTimersTex); tp.position.set( 0.00,-0.25,-0.70);
+    const ap=mkPlane(0.55,0.09,vrAlertTex);  ap.position.set( 0.00, 0.05,-0.80);
+    vrHudGroup.add(vp,fp,tp,ap);
+    camera3.add(vrHudGroup);
+    scene3.add(camera3); // camera must be in scene for children to render
+}
+
+/* VR panel drawing functions */
+function _panelBg(ctx,W,H,borderCol='rgba(0,210,155,0.45)') {
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle='rgba(0,0,0,0.83)';
+    ctx.beginPath(); ctx.roundRect(2,2,W-4,H-4,10); ctx.fill();
+    ctx.strokeStyle=borderCol; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.roundRect(2,2,W-4,H-4,10); ctx.stroke();
+}
+
+function drawVitalsVR() {
+    const c=vrVitalsC, ctx=c.getContext('2d'), W=c.width, H=c.height;
+    _panelBg(ctx,W,H);
+    const ff=(sz,col)=>{ctx.font=`${sz}px "Courier New"`;ctx.fillStyle=col;};
+    ff(11,'rgba(0,210,155,0.70)'); ctx.fillText('◈ VITALS',14,24);
+    const d=currentSensorData;
+    if(!d){ ff(12,'#ff4444'); ctx.textAlign='center'; ctx.fillText('◉ NO SIGNAL',W/2,H/2); ctx.textAlign='left'; vrVitalsTex.needsUpdate=true; return; }
+    [['HR',String(d.heart_rate),'bpm',hrCol(d.heart_rate)],
+     ['SPO2',String(d.spo2),'%',o2Col(d.spo2)],
+     ['TEMP',d.skin_temp_c?.toFixed(1)||'—','°C',tmpCol(d.skin_temp_c)]
+    ].forEach(([lbl,val,unit,col],i)=>{
+        const y=58+i*60;
+        ff(10,'#4a5e55'); ctx.fillText(lbl,14,y);
+        ff(26,col); ctx.fillText(val,80,y);
+        ff(10,'#3a4e45'); ctx.fillText(unit,155,y);
+        const bx=210,by=y-13,bw=170;
+        ctx.fillStyle='rgba(255,255,255,0.07)'; ctx.fillRect(bx,by,bw,4);
+        let pct=0; if(lbl==='HR')pct=Math.min(1,d.heart_rate/180); else if(lbl==='SPO2')pct=Math.max(0,(d.spo2-85)/15); else pct=Math.max(0,Math.min(1,(d.skin_temp_c-35)/5));
+        ctx.fillStyle=col; ctx.fillRect(bx,by,bw*pct,4);
+    });
+    ff(10,'#4a5e55'); ctx.fillText('WBGT',14,222); ff(13,wgtCol(d.wbgt)); ctx.fillText((d.wbgt?.toFixed(1)||'—')+' °C',80,222);
+    ff(10,'#4a5e55'); ctx.fillText('HYDRATION',14,248); ff(12,hydCol(d.hydration)); ctx.fillText(d.hydration?.toUpperCase()||'—',120,248);
+    const tc=TIER_COLOR[d.heat_tier]||'#00e87a';
+    ctx.beginPath(); ctx.arc(22,270,8,0,Math.PI*2); ctx.fillStyle=tc; ctx.fill();
+    ff(8,'#3a4e45'); ctx.fillText('HEAT TIER',38,264); ff(15,tc); ctx.fillText(d.heat_tier?.toUpperCase()||'—',38,276);
+    vrVitalsTex.needsUpdate=true;
+}
+
+function drawTimersVR() {
+    const c=vrTimersC, ctx=c.getContext('2d'), W=c.width, H=c.height;
+    _panelBg(ctx,W,H,'rgba(0,210,155,0.25)');
+    ctx.textAlign='center';
+    const w3=W/3;
+    [[$('t-thermal').textContent,'THERMAL','#c8c8c8'],
+     [$('t-air').textContent,'AIR',$('t-air').style.color||'#ff8c00'],
+     [$('t-scene').textContent,'ON SCENE','#c8c8c8']
+    ].forEach(([val,lbl,col],i)=>{
+        const x=w3*i+w3/2;
+        ctx.font='9px "Courier New"'; ctx.fillStyle='#3a4e45'; ctx.fillText(lbl,x,22);
+        ctx.font='24px "Courier New"'; ctx.fillStyle=col; ctx.fillText(val,x,58);
+    });
+    ctx.textAlign='left';
+    vrTimersTex.needsUpdate=true;
+}
+
+function drawAlertVR() {
+    const c=vrAlertC, ctx=c.getContext('2d'), W=c.width, H=c.height;
+    if(!currentAlertText){ ctx.clearRect(0,0,W,H); vrAlertTex.needsUpdate=true; return; }
+    const bc=currentAlertLevel==='critical'?'rgba(255,40,40,0.90)':currentAlertLevel==='warning'?'rgba(255,200,0,0.80)':'rgba(0,180,255,0.70)';
+    _panelBg(ctx,W,H,bc);
+    ctx.textAlign='center';
+    const lc=currentAlertLevel==='critical'?'#ff4444':currentAlertLevel==='warning'?'#ffd700':'#44aaff';
+    ctx.font='11px "Courier New"'; ctx.fillStyle=lc; ctx.fillText(currentAlertLevel.toUpperCase(),W/2,26);
+    ctx.font='13px "Courier New"'; ctx.fillStyle='#ffffff'; ctx.fillText(currentAlertText,W/2,58);
+    ctx.textAlign='left';
+    vrAlertTex.needsUpdate=true;
+}
+
+/* Three.js animation loop (VR + laptop) */
+function threeAnimate() {
+    tickParticles();
+    if(vrHudGroup){ drawVitalsVR(); drawTimersVR(); drawAlertVR(); vrFireTex.needsUpdate=true; }
+    renderer3.render(scene3,camera3);
+}
+
+
+/* ═══════════════════════════════════════════════════════
+   MODE ENTRY
+════════════════════════════════════════════════════════ */
+async function enterVR() {
+    if(!navigator.xr){ enterLaptop(); return; }
+    const ok=await navigator.xr.isSessionSupported('immersive-vr').catch(()=>false);
+    if(!ok){ enterLaptop(); return; }
+    try {
+        const session=await navigator.xr.requestSession('immersive-vr',{
+            optionalFeatures:['local-floor','bounded-floor'],
+        });
+        if(!renderer3) initThreeScene();
+        initVRHUD();
+        renderer3.xr.setSession(session);
+        renderer3.setAnimationLoop(threeAnimate);
+        $('xr-canvas').classList.add('active');
+        $('landing').classList.add('hidden');
+        $('hud').style.display='none';
+        activeMode='vr';
+        startAmbientAudio();
+        session.addEventListener('end',()=>{
+            renderer3.setAnimationLoop(null);
+            if(vrHudGroup){ camera3.remove(vrHudGroup); vrHudGroup=null; vrFireTex=null; }
+            $('xr-canvas').classList.remove('active');
+            $('landing').classList.remove('hidden');
+            $('hud').style.display='none';
+            activeMode=null;
+        });
+    } catch(e){ console.warn('VR failed:',e.message); enterLaptop(); }
+}
+
+async function enterAR() {
+    if(!navigator.xr){ enterLaptop(); return; }
+    const ok=await navigator.xr.isSessionSupported('immersive-ar').catch(()=>false);
+    if(!ok){ enterLaptop(); return; }
+    try {
+        const session=await navigator.xr.requestSession('immersive-ar',{
+            requiredFeatures:['camera-access'],
+            optionalFeatures:['dom-overlay'],
+            domOverlay:{root:document.getElementById('hud')},
+        });
+        const glCanvas=document.createElement('canvas');
+        document.body.appendChild(glCanvas);
+        const gl=glCanvas.getContext('webgl',{xrCompatible:true});
+        await gl.makeXRCompatible();
+        session.updateRenderState({baseLayer:new XRWebGLLayer(session,gl)});
+        document.body.style.background='transparent';
+        $('landing').classList.add('hidden');
+        $('hud').style.display='';
+        activeMode='ar';
+        (function xrFrame(){ session.requestAnimationFrame(xrFrame); })();
+        session.addEventListener('end',()=>{
+            glCanvas.remove(); document.body.style.background='';
+            $('landing').classList.remove('hidden'); $('hud').style.display='none';
+            activeMode=null;
+        });
+    } catch(e){ console.warn('AR failed:',e.message); enterLaptop(); }
+}
+
+function enterLaptop() {
+    if(!renderer3) initThreeScene();
+    // First-person panorama look-around via mouse drag
+    let isDragging=false, prevX=0, prevY=0, yaw=0, pitch=0;
+    const cvs=$('xr-canvas');
+    cvs.addEventListener('mousedown',e=>{ isDragging=true; prevX=e.clientX; prevY=e.clientY; });
+    cvs.addEventListener('mousemove',e=>{
+        if(!isDragging)return;
+        yaw  -=(e.clientX-prevX)*0.25; pitch-=(e.clientY-prevY)*0.25;
+        pitch=Math.max(-80,Math.min(80,pitch));
+        camera3.rotation.set(pitch*Math.PI/180,yaw*Math.PI/180,0,'YXZ');
+        prevX=e.clientX; prevY=e.clientY;
+    });
+    cvs.addEventListener('mouseup',  ()=>isDragging=false);
+    cvs.addEventListener('mouseleave',()=>isDragging=false);
+    // Touch support
+    cvs.addEventListener('touchstart',e=>{ isDragging=true; prevX=e.touches[0].clientX; prevY=e.touches[0].clientY; },{passive:true});
+    cvs.addEventListener('touchmove', e=>{ if(!isDragging)return; const t=e.touches[0]; yaw-=(t.clientX-prevX)*0.25; pitch-=(t.clientY-prevY)*0.25; pitch=Math.max(-80,Math.min(80,pitch)); camera3.rotation.set(pitch*Math.PI/180,yaw*Math.PI/180,0,'YXZ'); prevX=t.clientX; prevY=t.clientY; },{passive:true});
+    cvs.addEventListener('touchend',  ()=>isDragging=false);
+
+    renderer3.setAnimationLoop(()=>{ tickParticles(); renderer3.render(scene3,camera3); });
+    $('xr-canvas').classList.add('active');
+    $('landing').classList.add('hidden');
+    document.body.style.background='transparent';
+    $('hud').style.display='';
+    activeMode='laptop';
+    startAmbientAudio();
+}
+
+
+/* ── XR probe — update landing buttons ─────────────── */
+(async()=>{
+    const hint=$('landing-hint');
+    if(!navigator.xr){
+        hint.textContent='WebXR unavailable — clicking VR enters fullscreen panorama mode';
+        $('btn-ar').classList.add('hidden');
+        return;
+    }
+    const [vrOk,arOk]=await Promise.all([
+        navigator.xr.isSessionSupported('immersive-vr').catch(()=>false),
+        navigator.xr.isSessionSupported('immersive-ar').catch(()=>false),
+    ]);
+    if(!arOk) $('btn-ar').classList.add('hidden');
+    if(!vrOk) $('btn-vr').textContent='▶ LAPTOP MODE';
+    if(!vrOk&&!arOk) hint.textContent='No XR headset detected — launching fullscreen panorama mode';
+    else if(vrOk&&arOk) hint.textContent='VR + AR supported — select your mode';
+    else if(vrOk)  hint.textContent='VR mode ready — AR passthrough not available on this device';
+    else           hint.textContent='AR passthrough ready — VR mode unavailable';
+})();
+
+
+/* ── BOOT ────────────────────────────────────────────── */
+setNoSignal(true);
+renderFire(grid.getState());
+updateTimers();
+checkProximity(grid.getState());
+pollSensors();
+setInterval(pollSensors,  SENSOR_POLL_MS);
+setInterval(fireTick,     FIRE_TICK_MS);
+setInterval(updateTimers, 1000);
+
+// 5-minute status update in yellow/orange tier
+setInterval(()=>{
+    const d=currentSensorData;
+    if(!d) return;
+    if(d.heat_tier==='yellow'||d.heat_tier==='orange'){
+        speechMgr.speak(
+            `Status update. Heart rate ${d.heart_rate}. Heat stress level ${d.heat_tier}.`
+        );
+    }
+}, 5*60*1000);
+</script>
+</body>
+</html>
