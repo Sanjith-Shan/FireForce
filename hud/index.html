@@ -384,6 +384,8 @@ function updateVitals(d) {
         speechMgr.speak('Fall detected. Are you okay? MAYDAY will activate in 15 seconds.','critical');
     }
     if(spo2<90) showAlert('LOW BLOOD OXYGEN — CHECK MASK','critical');
+    // Remote MAYDAY (triggered by EMG on backend)
+    if(d.mayday_active && !maydayFired) triggerMayday();
 }
 
 function setNoSignal(v) {
@@ -644,6 +646,13 @@ let vrVitalsTex=null, vrFireTex=null, vrTimersTex=null, vrAlertTex=null;
 let vrVitalsC=null, vrTimersC=null, vrAlertC=null;
 let maydayFlashUntil=0;
 
+// Controller state
+let _controllerLines=[];          // [{ctrl, line}] for ray visualization
+let _prevBtns={rTrig:false, rA:false, rB:false, lY:false};
+let _triggerFlashUntil=0;
+let _scrubStep=0;                 // cycles 0→1→2→3 (+0,+10,+20,+30 min)
+let _lastScanSource=null;         // XR input source that triggered last scan
+
 function initThreeScene() {
     const canvas=$('xr-canvas');
     renderer3=new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
@@ -892,6 +901,7 @@ function drawAlertVR() {
 
 /* Three.js animation loop (VR + laptop) */
 function threeAnimate() {
+    _pollControllers();
     if(vrHudGroup){ drawVitalsVR(); drawTimersVR(); drawAlertVR(); vrFireTex.needsUpdate=true; }
     // Pulse fuel markers
     const _pt=Date.now()/1000;
@@ -899,6 +909,98 @@ function threeAnimate() {
         if(s.userData.pulse) s.material.opacity=0.45+0.55*Math.abs(Math.sin(_pt*2.5+g.position.x+g.position.z));
     }));
     renderer3.render(scene3,camera3);
+}
+
+/* ── Controller input ─────────────────────────────────── */
+function _hapticPulse(source, intensity, durationMs) {
+    source?.gamepad?.hapticActuators?.[0]?.pulse(intensity, durationMs);
+}
+
+function _hapticDouble(source) {
+    _hapticPulse(source, 0.5, 100);
+    setTimeout(()=>_hapticPulse(source, 0.5, 100), 220);
+}
+
+function _playScanTone() {
+    const ctx=_getAudioCtx();
+    const osc=ctx.createOscillator(), gain=ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.setValueAtTime(400, ctx.currentTime);
+    osc.frequency.linearRampToValueAtTime(800, ctx.currentTime+0.5);
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0, ctx.currentTime+0.48);
+    osc.start(); osc.stop(ctx.currentTime+0.5);
+}
+
+function _cycleFireScrub() {
+    _scrubStep=(_scrubStep+1)%4;
+    const mins=[0,10,20,30][_scrubStep];
+    if(mins===0){ scrubActive=false; renderFire(grid.getState()); }
+    else { scrubActive=true; renderFire(grid.predictFuture(mins,DEMO_WIND_DIR,DEMO_WIND_SPEED),true); }
+    if(vrFireTex) vrFireTex.needsUpdate=true;
+}
+
+function _speakStatus() {
+    const d=currentSensorData;
+    if(!d){ speechMgr.speak('No sensor data available.'); return; }
+    speechMgr.speak(
+        `Heart rate ${d.heart_rate} beats per minute. `+
+        `Oxygen ${d.spo2} percent. `+
+        `Skin temperature ${d.skin_temp_c?.toFixed(1)} degrees. `+
+        `WBGT ${d.wbgt?.toFixed(1)} degrees. `+
+        `Heat tier ${d.heat_tier}.`
+    );
+}
+
+async function _captureVRScene() {
+    const W=512, H=512;
+    const offCanvas=document.createElement('canvas');
+    offCanvas.width=W; offCanvas.height=H;
+    const offR=new THREE.WebGLRenderer({canvas:offCanvas, antialias:false, alpha:false});
+    offR.setSize(W,H);
+    const savedAspect=camera3.aspect;
+    camera3.aspect=1; camera3.updateProjectionMatrix();
+    if(vrHudGroup) vrHudGroup.visible=false;
+    offR.render(scene3,camera3);
+    if(vrHudGroup) vrHudGroup.visible=true;
+    camera3.aspect=savedAspect; camera3.updateProjectionMatrix();
+    offR.dispose();
+    return new Promise(res=>offCanvas.toBlob(b=>b.arrayBuffer().then(res),'image/jpeg',0.7));
+}
+
+function _pollControllers() {
+    if(activeMode!=='vr') return;
+    const session=renderer3?.xr?.getSession?.();
+    if(!session) return;
+
+    const flashNow=Date.now()<_triggerFlashUntil;
+    _controllerLines.forEach(({line})=>{
+        line.material.color.set(flashNow?0x00ffff:0xffffff);
+        line.material.opacity=flashNow?0.80:0.35;
+    });
+
+    for(const src of session.inputSources){
+        const gp=src.gamepad; if(!gp) continue;
+        if(src.handedness==='right'){
+            const trig=gp.buttons[0]?.pressed||false;
+            const aBut=gp.buttons[4]?.pressed||false;
+            const bBut=gp.buttons[5]?.pressed||false;
+            if(trig&&!_prevBtns.rTrig){
+                _triggerFlashUntil=Date.now()+200;
+                _hapticPulse(src,0.3,100);
+                _lastScanSource=src;
+                scanFuel();
+            }
+            if(aBut&&!_prevBtns.rA) _cycleFireScrub();
+            if(bBut&&!_prevBtns.rB){ _hapticPulse(src,1.0,500); triggerMayday(); }
+            _prevBtns.rTrig=trig; _prevBtns.rA=aBut; _prevBtns.rB=bBut;
+        }
+        if(src.handedness==='left'){
+            const yBut=gp.buttons[5]?.pressed||false;
+            if(yBut&&!_prevBtns.lY) _speakStatus();
+            _prevBtns.lY=yBut;
+        }
+    }
 }
 
 
@@ -1051,18 +1153,11 @@ function _speakTopFuel(data) {
 async function scanFuel() {
     if(isScanning||!scene3)return;
     isScanning=true; setScanStatus('SCANNING...');
-
-    if(activeMode==='vr'){
-        _clearMarkers(()=>{
-            const data=_mockFuelData();
-            _placeVRMarkers(data); _showFuelPanel(data); _speakTopFuel(data);
-            setScanStatus(''); isScanning=false;
-        });
-        return;
-    }
+    showAlert('SCANNING FUEL...','info');
+    _playScanTone();
 
     try {
-        const body=await _dummyJpeg();
+        const body = activeMode==='vr' ? await _captureVRScene() : await _dummyJpeg();
         const res=await fetch(`${SENSOR_SERVER}/analyze-fuel`,{
             method:'POST',
             headers:{'Content-Type':'image/jpeg'},
@@ -1074,18 +1169,23 @@ async function scanFuel() {
 
         _clearMarkers(()=>{
             if(!data.length){
+                showAlert('NO FUELS DETECTED','info');
                 setScanStatus('NO FUELS DETECTED');
                 setTimeout(()=>{setScanStatus('');isScanning=false;},3000);
                 return;
             }
             const fresh=data.map(item=>{
-                const pos=boxToWorldPosition(item.box_2d,camera3);
+                const pos = activeMode==='vr'
+                    ? boxToWorldPosition(item.box_2d,camera3)
+                    : boxToWorldPosition(item.box_2d,camera3);
                 const m=_createMarker(item,pos);
                 m.children.forEach(s=>{if(s.material)s.material.opacity=0;});
                 return m;
             });
             fuelMarkers=fresh; _fadeInMarkers(fresh);
             _showFuelPanel(data); _speakTopFuel(data);
+            if(activeMode==='vr') _placeVRMarkers(data);
+            _hapticDouble(_lastScanSource);
             setScanStatus(''); isScanning=false;
         });
     } catch(e){
@@ -1109,6 +1209,30 @@ async function enterVR() {
         if(!renderer3) initThreeScene();
         initVRHUD();
         renderer3.xr.setSession(session);
+
+        // Controller ray lines — one per hand
+        _controllerLines=[];
+        for(let i=0;i<2;i++){
+            const ctrl=renderer3.xr.getController(i);
+            const geo=new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-5)
+            ]);
+            const line=new THREE.Line(geo, new THREE.LineBasicMaterial({
+                color:0xffffff, transparent:true, opacity:0.35, depthTest:false
+            }));
+            ctrl.add(line);
+            scene3.add(ctrl);
+            _controllerLines.push({ctrl,line});
+        }
+
+        // Track which source is which hand
+        session.addEventListener('inputsourceschange', ev=>{
+            for(const src of ev.added){
+                if(src.handedness==='right') _prevBtns.rTrig=_prevBtns.rA=_prevBtns.rB=false;
+                if(src.handedness==='left')  _prevBtns.lY=false;
+            }
+        });
+
         renderer3.setAnimationLoop(threeAnimate);
         $('xr-canvas').classList.add('active');
         $('landing').classList.add('hidden');
@@ -1118,6 +1242,8 @@ async function enterVR() {
         session.addEventListener('end',()=>{
             renderer3.setAnimationLoop(null);
             if(vrHudGroup){ camera3.remove(vrHudGroup); vrHudGroup=null; vrFireTex=null; }
+            _controllerLines.forEach(({ctrl})=>scene3.remove(ctrl));
+            _controllerLines=[];
             $('xr-canvas').classList.remove('active');
             $('landing').classList.remove('hidden');
             $('hud').style.display='none';
@@ -1296,8 +1422,9 @@ setTimeout(updateEvacRoute,  2000);   // first run after fire has seeded a bit
 
 /// Keyboard shortcuts
 document.addEventListener('keydown', e=>{
-    if((e.key==='f'||e.key==='F')&&!e.ctrlKey&&!e.metaKey) scanFuel();
+    if((e.key==='f'||e.key==='F')&&!e.ctrlKey&&!e.metaKey) { _lastScanSource=null; scanFuel(); }
     if((e.key==='m'||e.key==='M')&&!e.ctrlKey&&!e.metaKey) triggerMayday();
+    if((e.key==='v'||e.key==='V')&&!e.ctrlKey&&!e.metaKey) _speakStatus();
 });
 
 // 5-minute status update in yellow/orange tier
