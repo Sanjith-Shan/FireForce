@@ -101,6 +101,15 @@
     .fuel-detail { color:#4a5e55; font-size:9px; grid-column:3; margin-top:1px; line-height:1.3; }
     #scan-status { font-size:9px; letter-spacing:2px; color:rgba(0,210,155,0.55); margin-top:5px; }
 
+    /* Connection status */
+    #conn-row { display:flex; align-items:center; gap:6px; margin-top:7px; padding-top:6px; border-top:1px solid rgba(0,210,155,0.10); }
+    #conn-dot  { width:7px; height:7px; border-radius:50%; flex-shrink:0; transition:background 0.4s, box-shadow 0.4s; }
+    #conn-dot.live { background:#00e87a; box-shadow:0 0 6px rgba(0,232,122,0.70); }
+    #conn-dot.dead { background:#ff4444; box-shadow:0 0 6px rgba(255,68,68,0.55); }
+    #conn-label { font-size:8px; letter-spacing:2px; transition:color 0.4s; }
+    #conn-label.live { color:#00e87a; }
+    #conn-label.dead { color:#ff4444; }
+
     /* MAYDAY */
     #mayday-btn { position:fixed; bottom:22px; right:22px; width:78px; height:78px; border-radius:50%; background:rgba(160,0,0,0.88); border:3px solid #ff2222; color:#fff; font-family:inherit; font-size:11px; letter-spacing:2px; font-weight:bold; line-height:1.2; cursor:pointer; animation:mayday-idle 3s ease-in-out infinite; transition:background 0.12s, box-shadow 0.12s; }
     #mayday-btn:hover, #mayday-btn:active { background:rgba(255,0,0,0.96); box-shadow:0 0 44px rgba(255,0,0,0.70); }
@@ -135,6 +144,7 @@
     <div class="vrow2"><span class="vlabel">WBGT</span><span class="vrow2-val" id="v-wbgt">— °C</span></div>
     <div class="vrow2"><span class="vlabel">HYDRATION</span><span class="vrow2-val" id="v-hyd">—</span></div>
     <div id="tier-badge"><div id="tier-dot"></div><div><div id="tier-sublabel">HEAT TIER</div><div id="tier-value">—</div></div></div>
+    <div id="conn-row"><div id="conn-dot" class="dead"></div><span id="conn-label" class="dead">DISCONNECTED</span></div>
   </div>
 
   <div id="fire-panel" class="panel">
@@ -374,7 +384,12 @@ function updateVitals(d) {
     if(spo2<90) showAlert('LOW BLOOD OXYGEN — CHECK MASK','critical');
 }
 
-function setNoSignal(v) { $('no-signal').classList.toggle('visible',v); if(v) currentSensorData=null; }
+function setNoSignal(v) {
+    $('no-signal').classList.toggle('visible', v);
+    if (v) currentSensorData = null;
+    const dot = $('conn-dot'), lbl = $('conn-label');
+    if (dot) { dot.className = v ? 'dead' : 'live'; lbl.className = v ? 'dead' : 'live'; lbl.textContent = v ? 'DISCONNECTED' : 'LIVE'; }
+}
 
 function flashVitals(tier) {
     const p=$('vitals');
