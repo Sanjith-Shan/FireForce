@@ -1,5 +1,8 @@
 # SolSpecs — Firefighter Wildfire AR/VR HUD
 
+🏆 1st Place — Hardware & IOT @ UCSD DataHacks
+🏆 Best Use of Gemini API
+
 SolSpecs is a real-time biometric and situational-awareness system for wildland firefighters. A wearable sensor armband (Arduino UNO Q) streams heart rate, SpO₂, skin temperature, sweat, and IMU data over WiFi to a Python state machine that fuses the signals into an OSHA-compliant heat stress tier (green → yellow → orange → red). The computed state is served over HTTP/HTTPS to a Meta Quest 3 browser, which renders a Three.js VR panorama with a fire-spread simulation, live vitals HUD panels, AI-powered fuel classification overlays, Dijkstra evacuation routing, and Web Speech API voice alerts.
 
 ---
@@ -10,13 +13,9 @@ SolSpecs is a real-time biometric and situational-awareness system for wildland 
 |-----------|------|
 | Arduino UNO Q (Qualcomm Snapdragon Linux) | Armband compute, posts sensor data over WiFi |
 | STM32 co-processor (Arduino RPC) | Sensor ADC, IMU, MAX30102 at 20 Hz |
-| MAX30102 | Heart rate + SpO₂ |
 | MPU-9250 | Accelerometer / gyroscope (fall detection, exertion) |
 | NTC thermistor (10 kΩ, B=3950) | Skin temperature |
-| GSR electrode pair | Galvanic skin response (sweat proxy) |
-| Photoresistor | Direct-sun detection for WBGT |
 | DHT11/22 (on armband) | Ambient temperature + humidity |
-| Mindrove 4-channel EMG | Wrist gestures: clench → fuel scan, half-clench → MAYDAY |
 | Meta Quest 3 | AR/VR HUD display |
 
 ---
